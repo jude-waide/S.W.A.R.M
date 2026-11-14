@@ -4,7 +4,7 @@ import { parseArgs } from "node:util";
 
 const { values } = parseArgs({
   options: {
-    url: { type: "string", default: "http://127.0.0.1:5187" },
+    url: { type: "string", default: "http://127.0.0.1:5000" },
     warmup: { type: "string", default: "400" },
     reset: { type: "boolean", default: false },
   },

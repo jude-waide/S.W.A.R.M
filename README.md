@@ -29,6 +29,50 @@ appropriate on a trusted private hotspot with a separate short-lived key.
 When using Vite separately, ensure ASP.NET Core is listening at
 `http://localhost:5000`.
 
+## Run the Paper plugin with the web app
+
+Build the plugin with Java 25:
+
+```powershell
+cd MC_Plugin
+.\gradlew.bat test
+.\gradlew.bat jar
+```
+
+Copy `MC_Plugin\build\libs\MC_Plugin-1.0-SNAPSHOT.jar` into the Paper server's
+`plugins` directory and start the server once. Edit
+`plugins\DroneSim\config.yml`; set `backend.plugin-key` to the same local-only
+key used by ASP.NET Core. The default backend URL is
+`http://127.0.0.1:5000`. The default mission bounds are X/Z `-64` through `63`
+and Y `32` through `95`; adjust the minimums if the demo area is elsewhere.
+
+On the same computer, start the built web app on port 5000:
+
+```powershell
+$env:PLUGIN_KEY = "use-a-local-demo-key"
+cd DroneSwarm.Web
+dotnet run --urls http://127.0.0.1:5000
+```
+
+Join the Paper world and run the following in a clear, flat area within the
+configured bounds:
+
+```text
+/set_hive 0 64 0
+/set_target 40 64 30
+/spawn_drones 5 2 2
+/start_mission
+```
+
+Open `http://127.0.0.1:5000` for the dashboard. `/reset_mission` explicitly
+resets the backend mission and makes the current drones available for another
+run. If the plugin was restarted and no longer has the mission ID, restart the
+web app to clear its in-memory mission before starting another one.
+
+For two computers, bind the web app to its LAN interface and set the plugin URL
+to that host's address; do this only on a trusted private hotspot with a
+short-lived key, never over venue Wi-Fi or public HTTP.
+
 The current web implementation includes protocol validation, idempotent retry
 handling, in-memory terrain/mission state, local frontier planning, one-hop-
 per-cycle multi-hop knowledge relay, isolation rendezvous, assigned peer
@@ -131,9 +175,9 @@ rolling ground covering the 128x128 horizontal mission bounds. It executes the
 backend's commands, including surface following and upload trips; it does not
 reveal unexplored terrain. Warmup runs real observation/command cycles without
 the usual delay to build a visible map, then telemetry continues every 500 ms.
-Use `--warmup 0` to watch from the beginning, `--url http://localhost:5000` for
-another backend address, or `--reset` to explicitly replace an existing mission.
-Stop the simulator with Ctrl+C. Restarting the backend clears the map.
+Use `--warmup 0` to watch from the beginning, `--url` for another backend
+address, or `--reset` to explicitly replace an existing mission. Stop the
+simulator with Ctrl+C. Restarting the backend clears the map.
 
 ## Backend regression checks
 
