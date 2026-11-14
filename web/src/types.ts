@@ -1,4 +1,5 @@
 export type Point = { x: number; y: number; z: number };
+export type MapViewMode = "hive" | "scout" | "overall";
 
 export type PublicDrone = {
   id: string;

@@ -2,28 +2,22 @@ import { Edges, Html, OrbitControls } from "@react-three/drei";
 import { Canvas, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState, type ComponentRef, type ReactNode } from "react";
 import * as THREE from "three";
-import type { Point, PublicDrone, Snapshot } from "./types";
+import type { MapViewMode, Point, PublicDrone, Snapshot } from "./types";
 import { getOverviewCamera } from "./mapCamera";
-import { getMapDrones } from "./mapDrones";
+import type { MapData } from "./mapDrones";
+import { getTerrainEdges } from "./terrainWireframe";
 
 type Props = {
   snapshot: Snapshot;
+  mapData: MapData;
   heightLimit: number;
   selectedId: string | null;
   focusRequest: number;
-  viewMode: "nest" | "overall";
+  viewMode: MapViewMode;
   onSelect: (id: string) => void;
 };
 
-type SurfaceEdge = {
-  height: number;
-  startX: number;
-  startZ: number;
-  endX: number;
-  endZ: number;
-};
-
-export default function MapScene({ snapshot, heightLimit, selectedId, focusRequest, viewMode, onSelect }: Props) {
+export default function MapScene({ snapshot, mapData, heightLimit, selectedId, focusRequest, viewMode, onSelect }: Props) {
   const [nestMesh, setNestMesh] = useState<THREE.Mesh | null>(null);
   useEffect(() => {
     const timer = window.setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
@@ -31,7 +25,7 @@ export default function MapScene({ snapshot, heightLimit, selectedId, focusReque
   }, []);
 
   const origin = snapshot.tower ?? { x: 0, y: 0, z: 0 };
-  const drones = useMemo(() => getMapDrones(snapshot.drones, viewMode), [snapshot.drones, viewMode]);
+  const { drones, terrain, reportedTarget } = mapData;
   const selectedDrone = drones.find((drone) => drone.id === selectedId);
   const selectedPosition = selectedDrone?.positionCurrent ? selectedDrone.position : null;
   const towerRangeCircle = useMemo(() => {
@@ -43,48 +37,21 @@ export default function MapScene({ snapshot, heightLimit, selectedId, focusReque
     }
     return positions;
   }, []);
-  const terrain = viewMode === "overall" ? snapshot.liveTerrain : snapshot.terrain;
   const visibleTerrain = useMemo(
     () => terrain.filter((cell) => cell.y <= heightLimit),
     [terrain, heightLimit],
   );
-  const surfaceEdges = useMemo(() => {
-    const solidCells = new Set(visibleTerrain.map((cell) => `${cell.x},${cell.y},${cell.z}`));
-    const topSurfaces = new Set<string>();
-
-    for (const cell of visibleTerrain) {
-      if (!solidCells.has(`${cell.x},${cell.y + 1},${cell.z}`))
-        topSurfaces.add(`${cell.y},${cell.x},${cell.z}`);
-    }
-
-    const edges: SurfaceEdge[] = [];
-    for (const cell of visibleTerrain) {
-      if (!topSurfaces.has(`${cell.y},${cell.x},${cell.z}`)) continue;
-      const x0 = cell.x - 0.5;
-      const x1 = cell.x + 0.5;
-      const z0 = cell.z - 0.5;
-      const z1 = cell.z + 0.5;
-      if (!topSurfaces.has(`${cell.y},${cell.x - 1},${cell.z}`))
-        edges.push({ height: cell.y, startX: x0, startZ: z0, endX: x0, endZ: z1 });
-      if (!topSurfaces.has(`${cell.y},${cell.x + 1},${cell.z}`))
-        edges.push({ height: cell.y, startX: x1, startZ: z0, endX: x1, endZ: z1 });
-      if (!topSurfaces.has(`${cell.y},${cell.x},${cell.z - 1}`))
-        edges.push({ height: cell.y, startX: x0, startZ: z0, endX: x1, endZ: z0 });
-      if (!topSurfaces.has(`${cell.y},${cell.x},${cell.z + 1}`))
-        edges.push({ height: cell.y, startX: x0, startZ: z1, endX: x1, endZ: z1 });
-    }
-    return edges;
-  }, [visibleTerrain]);
+  const surfaceEdges = useMemo(() => getTerrainEdges(visibleTerrain), [visibleTerrain]);
   const edgePositions = useMemo(() => {
     const positions = new Float32Array(surfaceEdges.length * 6);
     let offset = 0;
     for (const edge of surfaceEdges) {
-      positions[offset++] = edge.startX - origin.x;
-      positions[offset++] = edge.height + 1 - origin.y + 0.02;
-      positions[offset++] = edge.startZ - origin.z;
-      positions[offset++] = edge.endX - origin.x;
-      positions[offset++] = edge.height + 1 - origin.y + 0.02;
-      positions[offset++] = edge.endZ - origin.z;
+      positions[offset++] = edge.start.x - origin.x;
+      positions[offset++] = edge.start.y - origin.y;
+      positions[offset++] = edge.start.z - origin.z;
+      positions[offset++] = edge.end.x - origin.x;
+      positions[offset++] = edge.end.y - origin.y;
+      positions[offset++] = edge.end.z - origin.z;
     }
     return positions;
   }, [surfaceEdges, origin.x, origin.y, origin.z]);
@@ -95,7 +62,7 @@ export default function MapScene({ snapshot, heightLimit, selectedId, focusReque
         for (const z of [-3, 3]) points.push(new THREE.Vector3(x, y, z));
     for (let index = 0; index < edgePositions.length; index += 3)
       points.push(new THREE.Vector3(edgePositions[index], edgePositions[index + 1], edgePositions[index + 2]));
-    for (const point of [...drones.map((drone) => drone.position), snapshot.reportedTarget]) {
+    for (const point of [...drones.map((drone) => drone.position), reportedTarget]) {
       if (!point) continue;
       for (const dx of [-1, 1])
         for (const dy of [-1, 1])
@@ -107,7 +74,7 @@ export default function MapScene({ snapshot, heightLimit, selectedId, focusReque
             ));
     }
     return points;
-  }, [edgePositions, drones, snapshot.reportedTarget, origin.x, origin.y, origin.z]);
+  }, [edgePositions, drones, reportedTarget, origin.x, origin.y, origin.z]);
 
   return (
     <Canvas
@@ -134,7 +101,7 @@ export default function MapScene({ snapshot, heightLimit, selectedId, focusReque
             <Edges color="#ff9a24" toneMapped={false} />
           </mesh>
           <MapLabel position={[0, 2, 0]}>
-            <span className="map-tag nest-tag">NEST</span>
+            <span className="map-tag hive-tag">HIVE</span>
           </MapLabel>
           {[-3, -1.5, 0, 1.5, 3].map((height) => (
             <lineLoop key={height} position={[0, height, 0]}>
@@ -146,11 +113,11 @@ export default function MapScene({ snapshot, heightLimit, selectedId, focusReque
           ))}
         </group>
       )}
-      {snapshot.reportedTarget && (
+      {reportedTarget && (
         <mesh position={[
-          snapshot.reportedTarget.x - origin.x,
-          snapshot.reportedTarget.y - origin.y,
-          snapshot.reportedTarget.z - origin.z,
+          reportedTarget.x - origin.x,
+          reportedTarget.y - origin.y,
+          reportedTarget.z - origin.z,
         ]}>
           <octahedronGeometry args={[0.8, 0]} />
           <meshStandardMaterial color="#f07862" emissive="#a22e26" emissiveIntensity={0.8} />
@@ -289,7 +256,7 @@ function CameraControls({ position, origin, focusRequest, viewMode, points }: {
   position: Point | null;
   origin: Point;
   focusRequest: number;
-  viewMode: "nest" | "overall";
+  viewMode: MapViewMode;
   points: THREE.Vector3[];
 }) {
   const camera = useThree((state) => state.camera);

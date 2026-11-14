@@ -1,6 +1,7 @@
 import { HubConnectionBuilder, HubConnectionState, LogLevel } from "@microsoft/signalr";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DroneDebug, PublicDrone, Snapshot } from "./types";
+import type { DroneDebug, MapViewMode, PublicDrone, Snapshot } from "./types";
+import { getMapData } from "./mapDrones";
 
 const MapScene = lazy(() => import("./MapScene"));
 
@@ -32,7 +33,7 @@ export default function App() {
   const [debugError, setDebugError] = useState<string | null>(null);
   const [heightLimit, setHeightLimit] = useState(96);
   const [inspectionOpen, setInspectionOpen] = useState(false);
-  const [viewMode, setViewMode] = useState<"nest" | "overall">("nest");
+  const [viewMode, setViewMode] = useState<MapViewMode>("hive");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [focusRequest, setFocusRequest] = useState(0);
   const snapshotRef = useRef(snapshot);
@@ -48,7 +49,7 @@ export default function App() {
   useEffect(() => {
     setSelectedId(null);
     setDebug(null);
-    setViewMode("nest");
+    setViewMode("hive");
   }, [snapshot.missionId]);
 
   useEffect(() => {
@@ -205,13 +206,18 @@ export default function App() {
     }
   }, [selectedId, snapshot.drones]);
 
+  const mapData = useMemo(
+    () => getMapData(snapshot, viewMode, selectedId, debug),
+    [snapshot, viewMode, selectedId, debug],
+  );
+  const scoutReady = debug?.missionId === snapshot.missionId && debug?.droneId === selectedId;
   const counts = useMemo(() => ({
     total: snapshot.drones.length,
     linked: snapshot.drones.filter((drone) => drone.connectedToTower).length,
-    terrain: snapshot.terrain.length,
+    terrain: mapData.terrain.length,
     recovered: snapshot.recoveredCount,
     missing: snapshot.missingDroneIds.length,
-  }), [snapshot]);
+  }), [snapshot, mapData.terrain.length]);
 
   const selectedDrone = snapshot.drones.find((drone) => drone.id === selectedId) ?? null;
   const minHeight = snapshot.tower ? snapshot.tower.y - 32 : 32;
@@ -250,13 +256,19 @@ export default function App() {
         <div className="panel drawer-content">
           <div className="drawer-session">
             <div className="view-switch" role="group" aria-label="Map view">
-              <button className="map-overview" type="button" aria-pressed={!selectedId && viewMode === "nest"} onClick={() => {
+              <button className="map-overview" type="button" aria-pressed={viewMode === "hive"} onClick={() => {
                 setSelectedId(null);
-                setViewMode("nest");
+                setViewMode("hive");
               }}>
-                NEST VIEW
+                HIVE VIEW
               </button>
-              <button className="map-overview" type="button" aria-pressed={!selectedId && viewMode === "overall"} onClick={() => {
+              <button className="map-overview" type="button" aria-pressed={viewMode === "scout"} onClick={() => {
+                setViewMode("scout");
+                if (!selectedId && snapshot.drones[0]) selectDrone(snapshot.drones[0].id);
+              }}>
+                SCOUT VIEW
+              </button>
+              <button className="map-overview" type="button" aria-pressed={viewMode === "overall"} onClick={() => {
                 setSelectedId(null);
                 setViewMode("overall");
               }}>
@@ -308,13 +320,20 @@ export default function App() {
           <div className="map-viewport">
             {snapshot.tower ? (
               <Suspense fallback={<div className="map-loading">LOADING SPATIAL VIEW…</div>}>
-                <MapScene key={snapshot.missionId} snapshot={snapshot} heightLimit={heightLimit} selectedId={selectedId} focusRequest={focusRequest} viewMode={viewMode} onSelect={selectDrone} />
+                <MapScene key={snapshot.missionId} snapshot={snapshot} mapData={mapData} heightLimit={heightLimit} selectedId={selectedId} focusRequest={focusRequest} viewMode={viewMode} onSelect={selectDrone} />
               </Suspense>
             ) : (
               <div className="map-empty">
-                <div className="radar"><span /><i /><b /></div>
                 <span>AWAITING FIELD DATA</span>
                 <small>The live volumetric map will appear when a mission starts</small>
+              </div>
+            )}
+            {snapshot.tower && viewMode === "scout" && (!selectedId || !scoutReady) && (
+              <div className="map-empty" role="status">
+                <span>{debugError ? "SCOUT VIEW UNAVAILABLE" : selectedId ? "LOADING SCOUT KNOWLEDGE" : "SELECT A SCOUT"}</span>
+                <small>{debugError ?? (selectedId
+                  ? "Waiting for this unit's individual observations."
+                  : "Choose a unit from the roster to see its individual map.")}</small>
               </div>
             )}
           </div>
@@ -349,7 +368,7 @@ export default function App() {
           <summary className="panel-heading">
             <h2>{selectedDrone ? selectedDrone.id : "Unit detail"}</h2>
             {selectedDrone &&             <span className={`state-tag ${selectedDrone.faulted ? "fault" : selectedDrone.connectedToTower ? "linked" : "isolated"}`}>
-              {selectedDrone.faulted ? "FAULT" : selectedDrone.connectedToTower ? "TOWER NETWORK" : "ISOLATED"}
+              {selectedDrone.faulted ? "FAULT" : selectedDrone.connectedToTower ? "HIVE NETWORK" : "ISOLATED"}
             </span>}
           </summary>
           <div className="overlay-content">
@@ -381,7 +400,7 @@ function Metric({ label, value, accent = false }: { label: string; value: string
 function DroneRow({ drone, selected, onSelect }: { drone: PublicDrone; selected: boolean; onSelect: () => void }) {
   const signal = drone.faulted ? "faulted" : drone.connectedToTower ? "linked" : "isolated";
   return (
-    <button className={`drone-row ${selected ? "selected" : ""}`} onClick={onSelect} title={drone.faulted ? "Faulted" : drone.connectedToTower ? "Connected to nest" : "Isolated"}>
+    <button className={`drone-row ${selected ? "selected" : ""}`} onClick={onSelect} title={drone.faulted ? "Faulted" : drone.connectedToTower ? "Connected to hive" : "Isolated"}>
       <span className={`drone-glyph ${signal}`}><i /></span>
       <span className="drone-info">
         <strong>{drone.id}</strong>
@@ -407,7 +426,7 @@ function DroneInspector({ drone, debug }: { drone: PublicDrone; debug: DroneDebu
         <Readout label="LOCAL CELLS" value={debug.cells.length.toLocaleString()} />
         <Readout label="SOLID / AIR" value={`${solids} / ${debug.cells.length - solids}`} />
         <Readout label="SIMULATION TICK" value={debug.gameTick?.toLocaleString() ?? "—"} />
-        <Readout label="TOWER LINK" value={drone.directlyConnectedToTower ? "DIRECT" : drone.connectedToTower ? "RELAYED" : "NONE"} />
+        <Readout label="HIVE LINK" value={drone.directlyConnectedToTower ? "DIRECT" : drone.connectedToTower ? "RELAYED" : "NONE"} />
         <Readout label="PEER CONTACTS" value={debug.connectedPeers.length ? debug.connectedPeers.join(", ") : "NONE"} />
         {debug.recoveryTargetId && <Readout label="RESCUE ASSIGNMENT" value={debug.recoveryTargetId} />}
         {debug.rendezvousTargetId && <Readout label="RENDEZVOUS TARGET" value={debug.rendezvousTargetId} />}
