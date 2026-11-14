@@ -27,7 +27,9 @@ Do not simply stop all commands when the tower receives the report.
 The target must be discovered through sensing, not supplied as prior knowledge
 to the drones. The backend receives target coordinates as hidden mission ground
 truth, isolated from every drone's decision-making and shared knowledge.
-The implementation of this separation remains to be designed.
+The in-memory web backend keeps ground truth private and only exposes target
+coordinates to a drone after detection or to the tower after a legitimate
+report.
 
 Tower and target coordinates stay fixed during a mission. Moving either requires
 a fresh mission; moving-target tracking is outside this version.
@@ -273,6 +275,14 @@ Mission initialisation and reset are controlled through the authenticated plugin
 - Initial search strategy: local frontier exploration. A drone chooses reachable
   known-free locations beside unknown terrain, based only on its permitted
   knowledge, avoiding areas it knows have already been searched.
+- Exploration paths stay within 3 blocks (Euclidean block-centre distance) of
+  locally known solid ground, walls, or ceilings. Unsupported air is not a
+  search objective. If already away from surfaces, seek the nearest reachable
+  known surface; if none is known, hold. Known-air return/report routes are
+  exempt. This deliberately narrows the original volumetric search policy.
+- After 24 completed frontier advances without a direct tower upload, carry
+  discoveries back to the tower, then resume exploration. Known-route transit
+  does not count towards this budget. Do not expose unrelayed terrain globally.
 - Terrain-known and target-searched coverage are separate. A cell counts as
   searched only when in the drone's sensing cube with unobstructed line of sight.
   Occupancy reported behind an obstruction does not clear that cell for search.
@@ -380,6 +390,12 @@ Mission initialisation and reset are controlled through the authenticated plugin
 - Peer sightings and recovery assignments travel through permitted messages,
   preserving their original observation time. No global peer-position lookup
   is available to drone decision-making.
+- Movement dispatch has a safety-only exception: authoritative plugin positions
+  and unfinished move destinations reserve occupied blocks before commands are
+  issued. This prevents shared destinations and head-on swaps without publishing
+  peer positions or terrain into drone knowledge. Alternative routes still use
+  only the drone's acquired terrain. Temporary traffic waits are reported as
+  `waitingForClearance`, not exhausted search.
 
 ### Failed Routes and Exhausted Local Search
 
@@ -407,11 +423,17 @@ Mission initialisation and reset are controlled through the authenticated plugin
 
 ## Web Map Visibility
 
-- Terrain displays only discoveries that have reached the tower.
+- Nest-view terrain displays only discoveries that have reached the tower.
 - The overlay shows current positions and communication links for drones
   currently connected to the tower.
-- Disconnected drones remain at their last tower-known positions, rather than
+- In nest view, disconnected drones remain at their last tower-known positions, rather than
   revealing their live positions.
+- Overall view is an observer view: it shows all scouts' latest plugin-reported
+  positions, including isolated scouts. Stale or faulted telemetry stays marked.
+  Its terrain also merges all scouts' observations by source tick, revealing
+  discoveries immediately even before they reach the nest. This is display-only:
+  it does not update tower knowledge or planner inputs. Nest view still hides
+  discoveries that have not reached the tower.
 - Connectivity includes multi-hop paths through intermediary drones.
 - The UI must distinguish last-known positions from current connected positions.
 - Each drone is clickable to open a live view of its current 7x7x7 observations,
@@ -475,4 +497,11 @@ Mission initialisation and reset are controlled through the authenticated plugin
 
 The decisions above were captured during interactive discovery on 2026-11-14.
 The version-one wire contract is agreed; share it with the plugin teammate.
-Application code, deployment, and performance validation have not started.
+An initial ASP.NET Core API and React/Three.js dashboard are implemented. The
+backend provides in-memory mission state, authenticated plugin endpoints,
+surface-following local-frontier planning, periodic map-upload trips,
+one-hop-per-cycle multi-hop knowledge relay, isolation rendezvous, tower-assigned
+bounded missing-peer rescue, target reporting/recall, recovery-incomplete
+reporting, and selected-drone SignalR diagnostics. The Minecraft plugin,
+end-to-end integration, deployment, and performance validation remain
+outstanding.

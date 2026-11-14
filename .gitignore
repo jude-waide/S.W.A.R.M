@@ -1,0 +1,15 @@
+# .NET
+**/bin/
+**/obj/
+DroneSwarm.Web/wwwroot/
+
+# Node / Vite
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Local configuration
+appsettings.Development.json
+.env
+.env.*
+!.env.example

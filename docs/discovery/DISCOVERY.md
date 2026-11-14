@@ -276,6 +276,13 @@ hosting and the local backup straightforward.
 
 ## Status
 
-Discovery and the protocol baseline are documented. Application implementation,
-deployment, integration testing, and performance verification have not started.
-The detailed domain reference is [CONTEXT.md](../../CONTEXT.md).
+Discovery and the protocol baseline are documented. An initial ASP.NET Core
+backend and React/Three.js dashboard now implement in-memory mission state,
+authenticated plugin endpoints, surface-following frontier planning with
+periodic map-upload trips, live snapshots, and
+the public read-only map. One-hop-per-cycle multi-hop relay, isolation
+rendezvous, tower-assigned bounded missing-peer rescue, target reporting and
+recall, recovery status reporting, and selected-drone live diagnostics are
+implemented. The Minecraft plugin integration, deployment, and performance
+verification remain outstanding. See the [README](../../README.md) for local
+run instructions and [CONTEXT.md](../../CONTEXT.md) for the domain reference.
