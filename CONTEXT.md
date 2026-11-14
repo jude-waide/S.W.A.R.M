@@ -296,6 +296,10 @@ Mission initialisation and reset are controlled through the authenticated plugin
 - Terrain-known and target-searched coverage are separate. A cell counts as
   searched only when in the drone's sensing cube with unobstructed line of sight.
   Occupancy reported behind an obstruction does not clear that cell for search.
+- Bound visibility checks to the segment's voxel region, preserving exact
+  edge/corner intersections and endpoint exclusions. Reject out-of-range
+  communication before constructing combined solid maps; growing knowledge
+  must not cause a full-map scan for every short sightline.
 - Frontier selection must also seek viewpoints into mapped-but-unsearched
   regions, not stop merely because occupancy is already known.
 - Choose the nearest useful reachable viewpoint. Prefer greater estimated new

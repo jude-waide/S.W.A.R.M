@@ -1,6 +1,9 @@
+using System.Diagnostics;
+using Xunit.Abstractions;
+
 namespace DroneSwarm.Web.Tests;
 
-public sealed class MissionCoordinationTests
+public sealed class MissionCoordinationTests(ITestOutputHelper output)
 {
     [Fact]
     public void OverallTargetIsVisibleBeforeDiscoveryWithoutChangingHiveOrScoutKnowledge()
@@ -18,6 +21,57 @@ public sealed class MissionCoordinationTests
 
         service.Reset(missionId);
         Assert.Null(service.GetSnapshot().OverallTarget);
+    }
+
+    [Fact]
+    public void TwentyScoutsWithMatureMapsPlanAndPublishWithinOneSecond()
+    {
+        var service = new MissionService();
+        var missionId = Guid.NewGuid().ToString();
+        var ids = Enumerable.Range(0, 20).Select(index => $"SCOUT-{index:00}").ToArray();
+        Initialize(service, missionId, new() { X = 60, Y = 12, Z = 60 }, ids);
+        long sequence = 0;
+        // Seed accumulated observations without including warmup decisions in the timing.
+        for (var z = -24; z <= 24; z += 6)
+        for (var x = -48; x <= 48; x += 6)
+            Accept(service, missionId, ++sequence, 0,
+                ids.Select(id => Drone(id, new() { X = x + 0.5, Y = 12.5, Z = z + 0.5 }, CellIsSolid)).ToArray());
+
+        var telemetry = ids.Select((id, index) => Drone(id, new()
+        {
+            X = -42.5 + index % 7 * 12,
+            Y = 12.5,
+            Z = -18.5 + index / 7 * 12
+        }, CellIsSolid)).ToArray();
+        var timer = Stopwatch.StartNew();
+        var response = Accept(service, missionId, ++sequence, 10, telemetry);
+        var snapshot = service.GetSnapshot();
+        timer.Stop();
+        output.WriteLine($"Mature 20-scout decision and snapshot: {timer.Elapsed.TotalMilliseconds:F0} ms.");
+
+        Assert.Equal(20, response.Commands.Count);
+        Assert.All(snapshot.Drones, drone => Assert.True(drone.KnownCellCount > 30_000));
+        Assert.True(timer.Elapsed < TimeSpan.FromSeconds(1),
+            $"A mature 20-scout decision and snapshot took {timer.Elapsed.TotalMilliseconds:F0} ms; it must stay below half the plugin's 2-second timeout.");
+    }
+
+    [Theory]
+    [InlineData(12, 1, 12, 0, false)]
+    [InlineData(14, 1, 12, 0, false)]
+    [InlineData(12, 1, 12, 1, false)]
+    [InlineData(12, 2, 12, 0, true)]
+    [InlineData(12, 2, 12, 2, true)]
+    public void TargetVisibilityPreservesEdgeCornerAndEndpointOcclusion(
+        int targetY, int solidX, int solidY, int solidZ, bool visible)
+    {
+        var service = new MissionService();
+        var missionId = Guid.NewGuid().ToString();
+        Initialize(service, missionId, new() { X = 2, Y = targetY, Z = 2 }, ["A"]);
+        Accept(service, missionId, 1, 10, Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 },
+            (x, y, z) => CellIsSolid(x, y, z) || (x == solidX && y == solidY && z == solidZ)));
+
+        Assert.Equal(visible, service.GetDroneDebug("A").KnownTarget is not null);
+        Assert.Equal(visible, service.GetSnapshot().TargetReported);
     }
 
     [Fact]

@@ -235,6 +235,12 @@ the nearest reachable known surface; without any observed surface it holds
 instead of searching empty sky. Return/report routes may cross known open air.
 This intentionally stops treating unsupported air as useful search space.
 
+Short sightlines inspect only their bounded voxel region, rather than every
+known solid, while retaining exact edge/corner occlusion. Out-of-range hive
+and peer links are rejected before merging solid-cell sets. This bounds local
+visibility work as maps grow without changing knowledge permissions, flight
+speed, or the 10-tick observation/decision cadence.
+
 After 24 successful frontier advances without a direct tower upload, a scout
 returns through known free space to share its discoveries, then resumes
 exploring. Transit across already-searched terrain does not consume that budget.

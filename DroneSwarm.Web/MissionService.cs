@@ -659,6 +659,7 @@ public sealed class MissionService
         {
             drone.ConnectedPeers.Clear();
             drone.DirectlyConnectedToTower = drone.Position is not null && !drone.Faulted &&
+                IsInTowerNeighbourhood(mission, Block.Floor(drone.Position)) &&
                 CanCommunicate(mission.Tower, Block.Floor(drone.Position), SolidCells(drone.KnownCells, mission.TowerCells));
         }
         var active = mission.Drones.Values.Where(drone => drone.Position is not null && !drone.Faulted).ToArray();
@@ -667,7 +668,8 @@ public sealed class MissionService
         {
             var a = Block.Floor(active[i].Position!);
             var b = Block.Floor(active[j].Position!);
-            if (!CanCommunicate(a, b, SolidCells(active[i].KnownCells, active[j].KnownCells))) continue;
+            if (!WithinCube(a, b) ||
+                !CanCommunicate(a, b, SolidCells(active[i].KnownCells, active[j].KnownCells))) continue;
             active[i].ConnectedPeers.Add(active[j].Id);
             active[j].ConnectedPeers.Add(active[i].Id);
         }
@@ -1134,9 +1136,13 @@ public sealed class MissionService
     private static bool SegmentBlocked(Block from, Block to, HashSet<Block> solids)
     {
         if (from == to) return false;
-        foreach (var solid in solids)
+        // Bound the broad phase; exact intersections retain edge/corner occlusion.
+        for (var x = Math.Min(from.X, to.X); x <= Math.Max(from.X, to.X); x++)
+        for (var y = Math.Min(from.Y, to.Y); y <= Math.Max(from.Y, to.Y); y++)
+        for (var z = Math.Min(from.Z, to.Z); z <= Math.Max(from.Z, to.Z); z++)
         {
-            if (solid == from || solid == to) continue;
+            var solid = new Block(x, y, z);
+            if (solid == from || solid == to || !solids.Contains(solid)) continue;
             if (SegmentIntersectsCell(from, to, solid)) return true;
         }
         return false;
