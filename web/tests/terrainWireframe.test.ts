@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { getTerrainEdges } from "../src/terrainWireframe.ts";
+import { getTerrainEdges, getTerrainGeometry } from "../src/terrainWireframe.ts";
 
 test("a voxel has twelve unique edges including all four vertical corners", () => {
   const edges = getTerrainEdges([{ x: 0, y: 4, z: 0 }]);
@@ -13,6 +13,18 @@ test("a voxel has twelve unique edges including all four vertical corners", () =
     assert.deepEqual([start.y, end.y].sort(), [4, 5]);
   }
   assert.equal(new Set(edges.map((edge) => JSON.stringify(edge))).size, edges.length);
+});
+
+test("occlusion triangles cover all exposed faces but omit shared interior faces", () => {
+  const single = getTerrainGeometry([{ x: 0, y: 4, z: 0 }]);
+  assert.equal(single.faces.length, 36);
+  const joined = getTerrainGeometry([{ x: 0, y: 4, z: 0 }, { x: 1, y: 4, z: 0 }]);
+  assert.equal(joined.faces.length, 60);
+  for (let index = 0; index < joined.faces.length; index += 3) {
+    const triangle = joined.faces.slice(index, index + 3);
+    assert.ok(!triangle.every((point) => point.x === 0.5), "Shared interior plane must not occlude");
+  }
+  assert.deepEqual(getTerrainGeometry([]), { edges: [], faces: [] });
 });
 
 test("adjacent voxels have corner connections but no interior coplanar seams", () => {

@@ -49,6 +49,7 @@ export default function App() {
   useEffect(() => {
     setSelectedId(null);
     setDebug(null);
+    setInspectionOpen(false);
     setViewMode("hive");
   }, [snapshot.missionId]);
 
@@ -360,32 +361,32 @@ export default function App() {
           </details>
         </section>
 
-        <details
+        {selectedDrone && inspectionOpen && <section
           className="panel overlay-panel detail-panel"
-          open={inspectionOpen}
-          onToggle={(event) => setInspectionOpen(event.currentTarget.open)}
+          aria-label={`Unit ${selectedDrone.id} details`}
         >
-          <summary className="panel-heading">
-            <h2>{selectedDrone ? selectedDrone.id : "Unit detail"}</h2>
-            {selectedDrone &&             <span className={`state-tag ${selectedDrone.faulted ? "fault" : selectedDrone.connectedToTower ? "linked" : "isolated"}`}>
-              {selectedDrone.faulted ? "FAULT" : selectedDrone.connectedToTower ? "HIVE NETWORK" : "ISOLATED"}
-            </span>}
-          </summary>
+          <header className="panel-heading">
+            <h2>UNIT {selectedDrone.id}</h2>
+            <span className={`state-tag ${selectedDrone.faulted ? "fault" : selectedDrone.connectedToTower ? "linked" : "isolated"}`}>
+              {selectedDrone.faulted ? "FAULT" : selectedDrone.connectedToTower ? "LINKED" : "ISOLATED"}
+            </span>
+            <button type="button" className="detail-close" aria-label="Close unit details" onClick={() => setInspectionOpen(false)}>
+              <svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5">
+                <path d="m4 4 8 8M12 4l-8 8" />
+              </svg>
+            </button>
+          </header>
           <div className="overlay-content">
-          {selectedDrone && debug?.droneId === selectedDrone.id && debug.missionId === snapshot.missionId ? (
+          {debug?.droneId === selectedDrone.id && debug.missionId === snapshot.missionId ? (
             <DroneInspector drone={selectedDrone} debug={debug} />
           ) : (
-            <div className="detail-empty">
-              <div className="target-icon"><span /><i /></div>
-              <strong>{debugError ? "INSPECTION UNAVAILABLE" : selectedDrone ? "CONNECTING TO UNIT" : "SELECT A UNIT"}</strong>
-              <p>{debugError ?? (selectedDrone
-                ? "Loading the selected drone's local knowledge."
-                : "Choose a drone from the roster or map to inspect its local knowledge.")}</p>
-              <small>DEBUG VIEW IS READ-ONLY</small>
+            <div className="detail-empty" role="status">
+              <strong>{debugError ? "INSPECTION UNAVAILABLE" : "CONNECTING TO UNIT"}</strong>
+              <p>{debugError ?? "Loading this unit's local knowledge."}</p>
             </div>
           )}
           </div>
-        </details>
+        </section>}
       </section>
     </main>
   );
@@ -431,8 +432,8 @@ function DroneInspector({ drone, debug }: { drone: PublicDrone; debug: DroneDebu
         {debug.recoveryTargetId && <Readout label="RESCUE ASSIGNMENT" value={debug.recoveryTargetId} />}
         {debug.rendezvousTargetId && <Readout label="RENDEZVOUS TARGET" value={debug.rendezvousTargetId} />}
       </div>
-      <div className="knowledge-box">
-        <div><span className="eyebrow">LOCAL KNOWLEDGE</span><span className="knowledge-count">{debug.cells.length} CELLS</span></div>
+      <details className="knowledge-box">
+        <summary><span>LOCAL KNOWLEDGE</span><span className="knowledge-count">{debug.cells.length.toLocaleString()} CELLS</span></summary>
         <div className="cube-preview" aria-label="Local terrain cube">
           {Array.from({ length: 49 }, (_, index) => {
             const cell = debug.cells[index];
@@ -440,7 +441,7 @@ function DroneInspector({ drone, debug }: { drone: PublicDrone; debug: DroneDebu
           })}
         </div>
         <small>OBSERVATIONS · SOLID CELLS / KNOWN AIR / UNKNOWN</small>
-      </div>
+      </details>
       {debug.knownTarget && (
         <div className="target-report">
           <span className="target-report-icon">⌖</span>

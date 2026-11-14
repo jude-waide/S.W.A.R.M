@@ -5,7 +5,7 @@ import * as THREE from "three";
 import type { MapViewMode, Point, PublicDrone, Snapshot } from "./types";
 import { getOverviewCamera } from "./mapCamera";
 import type { MapData } from "./mapDrones";
-import { getTerrainEdges } from "./terrainWireframe";
+import { getTerrainGeometry } from "./terrainWireframe";
 
 type Props = {
   snapshot: Snapshot;
@@ -41,7 +41,11 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
     () => terrain.filter((cell) => cell.y <= heightLimit),
     [terrain, heightLimit],
   );
-  const surfaceEdges = useMemo(() => getTerrainEdges(visibleTerrain), [visibleTerrain]);
+  const terrainGeometry = useMemo(() => getTerrainGeometry(visibleTerrain), [visibleTerrain]);
+  const surfaceEdges = terrainGeometry.edges;
+  const facePositions = useMemo(() => new Float32Array(terrainGeometry.faces.flatMap((point) => [
+    point.x - origin.x, point.y - origin.y, point.z - origin.z,
+  ])), [terrainGeometry.faces, origin.x, origin.y, origin.z]);
   const edgePositions = useMemo(() => {
     const positions = new Float32Array(surfaceEdges.length * 6);
     let offset = 0;
@@ -85,6 +89,21 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
       <fog attach="fog" args={["#100d08", 180, 600]} />
       <ambientLight intensity={1.3} />
       <directionalLight position={[20, 30, 12]} intensity={2.2} color="#ffe4b2" />
+      {facePositions.length > 0 && (
+        <mesh renderOrder={-1}>
+          <bufferGeometry>
+            <bufferAttribute attach="attributes-position" args={[facePositions, 3]} />
+          </bufferGeometry>
+          <meshBasicMaterial
+            colorWrite={false}
+            depthWrite
+            side={THREE.DoubleSide}
+            polygonOffset
+            polygonOffsetFactor={1}
+            polygonOffsetUnits={1}
+          />
+        </mesh>
+      )}
       {edgePositions.length > 0 && (
         <lineSegments>
           <bufferGeometry>

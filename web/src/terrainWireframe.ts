@@ -4,9 +4,10 @@ type Edge = { start: Point; end: Point };
 
 const key = (point: Point) => `${point.x},${point.y},${point.z}`;
 
-export function getTerrainEdges(cells: Point[]): Edge[] {
+export function getTerrainGeometry(cells: Point[]): { edges: Edge[]; faces: Point[] } {
   const solids = new Set(cells.map(key));
   const edges = new Map<string, Edge & { normals: Set<number>; faces: number }>();
+  const triangles: Point[] = [];
   const faces = [
     { offset: [-1, 0, 0], corners: [0, 1, 3, 2] },
     { offset: [1, 0, 0], corners: [4, 6, 7, 5] },
@@ -25,6 +26,8 @@ export function getTerrainEdges(cells: Point[]): Edge[] {
     faces.forEach((face, normal) => {
       const [dx, dy, dz] = face.offset;
       if (solids.has(`${x + dx},${y + dy},${z + dz}`)) return;
+      const [a, b, c, d] = face.corners.map((index) => corners[index]);
+      triangles.push(a, b, c, a, c, d);
       for (let index = 0; index < 4; index++) {
         let start = corners[face.corners[index]];
         let end = corners[face.corners[(index + 1) % 4]];
@@ -41,7 +44,14 @@ export function getTerrainEdges(cells: Point[]): Edge[] {
     });
   }
   // Keep boundaries and corners, not the seams between coplanar voxel faces.
-  return [...edges.values()]
-    .filter((edge) => edge.faces === 1 || edge.normals.size > 1)
-    .map(({ start, end }) => ({ start, end }));
+  return {
+    edges: [...edges.values()]
+      .filter((edge) => edge.faces === 1 || edge.normals.size > 1)
+      .map(({ start, end }) => ({ start, end })),
+    faces: triangles,
+  };
+}
+
+export function getTerrainEdges(cells: Point[]): Edge[] {
+  return getTerrainGeometry(cells).edges;
 }
