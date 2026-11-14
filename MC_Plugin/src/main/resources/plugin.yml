@@ -2,20 +2,3 @@ name: DroneSim
 version: 1.0
 main: me.jetcobblestone.Main
 api-version: '1.21'
-
-commands:
-  set_hive:
-    description: Places a glowing beehive at the command centre location.
-    usage: /<command> <x> <y> <z>
-  set_target:
-    description: Places a glowing honey-block search target.
-    usage: /<command> <x> <y> <z>
-  spawn_drones:
-    description: Spawns drones around the hive.
-    usage: /<command> <n_drones> [drone_range] [speed]
-  start_mission:
-    description: Begins a mission using the configured backend.
-    usage: /<command>
-  reset_mission:
-    description: Resets the active backend mission and stops plugin telemetry.
-    usage: /<command>

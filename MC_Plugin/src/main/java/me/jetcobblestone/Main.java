@@ -3,7 +3,7 @@ package me.jetcobblestone;
 import org.bukkit.Location;
 import org.bukkit.Color;
 import org.bukkit.Material;
-import org.bukkit.command.PluginCommand;
+import io.papermc.paper.plugin.lifecycle.event.types.LifecycleEvents;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public final class Main extends JavaPlugin {
@@ -17,16 +17,13 @@ public final class Main extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        if (getConfig().isSet("mission.bounds-min")) {
+            getLogger().warning("mission.bounds-min is no longer used; mission bounds are centered on the hive.");
+        }
         droneManager = new DroneManager(this);
         MissionCommands commands = new MissionCommands(this);
-        for (String name : new String[]{
-                "set_hive", "set_target", "spawn_drones", "start_mission", "reset_mission"}) {
-            PluginCommand command = getCommand(name);
-            if (command == null) {
-                throw new IllegalStateException("Command is missing from plugin.yml: " + name);
-            }
-            command.setExecutor(commands);
-        }
+        getLifecycleManager().registerEventHandler(LifecycleEvents.COMMANDS,
+                event -> commands.register(event.registrar()));
     }
 
     @Override

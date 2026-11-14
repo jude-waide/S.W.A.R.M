@@ -1,21 +1,25 @@
 package me.jetcobblestone;
 
-import org.bukkit.Bukkit;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.context.CommandContext;
+import com.mojang.brigadier.exceptions.CommandSyntaxException;
+import com.mojang.brigadier.suggestion.Suggestions;
+import com.mojang.brigadier.suggestion.SuggestionsBuilder;
+import io.papermc.paper.command.brigadier.CommandSourceStack;
+import io.papermc.paper.command.brigadier.Commands;
+import io.papermc.paper.command.brigadier.argument.ArgumentTypes;
+import io.papermc.paper.command.brigadier.argument.resolvers.BlockPositionResolver;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.block.Block;
-import org.bukkit.command.BlockCommandSender;
-import org.bukkit.command.Command;
-import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Bee;
-import org.bukkit.entity.Entity;
-import org.jetbrains.annotations.NotNull;
 
 import java.net.URI;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 
-public class MissionCommands implements CommandExecutor {
+public class MissionCommands {
 
     private static final int MAX_DRONES = 64;
     private static final int MAX_RANGE = 3; // protocol: drones observe a +-3 cube
@@ -26,39 +30,60 @@ public class MissionCommands implements CommandExecutor {
         this.plugin = plugin;
     }
 
-    @Override
-    public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command,
-                             @NotNull String label, @NotNull String[] args) {
-        return switch (command.getName().toLowerCase()) {
-            case "set_hive" -> handleSetHive(sender, args);
-            case "set_target" -> handleSetTarget(sender, args);
-            case "spawn_drones" -> handleSpawnDrones(sender, args);
-            case "start_mission" -> handleStartMission(sender, args);
-            case "reset_mission" -> handleResetMission(sender, args);
-            default -> false;
-        };
+    public void register(Commands registrar) {
+        registrar.register(Commands.literal("set_hive")
+                .then(Commands.argument("position", ArgumentTypes.blockPosition())
+                        .executes(context -> handleSetHive(context.getSource().getSender(), position(context)) ? 1 : 0))
+                .build(), "Place a glowing beehive and center the mission bounds on it.");
+        registrar.register(Commands.literal("set_target")
+                .then(Commands.argument("position", ArgumentTypes.blockPosition())
+                        .executes(context -> handleSetTarget(context.getSource().getSender(), position(context)) ? 1 : 0))
+                .build(), "Place a glowing honey-block target inside the hive's mission bounds.");
+        registrar.register(Commands.literal("spawn_drones")
+                .then(Commands.argument("n_drones", IntegerArgumentType.integer(1, MAX_DRONES))
+                        .suggests((context, builder) -> suggestNumbers(builder, 1, 5, 10, 20, MAX_DRONES))
+                        .executes(context -> handleSpawnDrones(context.getSource().getSender(),
+                                IntegerArgumentType.getInteger(context, "n_drones"), 3, 2) ? 1 : 0)
+                        .then(Commands.argument("drone_range", IntegerArgumentType.integer(1, MAX_RANGE))
+                                .suggests((context, builder) -> suggestNumbers(builder, 1, 2, 3))
+                                .executes(context -> handleSpawnDrones(context.getSource().getSender(),
+                                        IntegerArgumentType.getInteger(context, "n_drones"),
+                                        IntegerArgumentType.getInteger(context, "drone_range"), 2) ? 1 : 0)
+                                .then(Commands.argument("speed", IntegerArgumentType.integer(1, 5))
+                                        .suggests((context, builder) -> suggestNumbers(builder, 1, 2, 3, 4, 5))
+                                        .executes(context -> handleSpawnDrones(context.getSource().getSender(),
+                                                IntegerArgumentType.getInteger(context, "n_drones"),
+                                                IntegerArgumentType.getInteger(context, "drone_range"),
+                                                IntegerArgumentType.getInteger(context, "speed")) ? 1 : 0))))
+                .build(), "Spawn 1-64 drones; optional range 1-3 (default 3), speed 1-5 blocks/s (default 2).");
+        registrar.register(Commands.literal("start_mission")
+                .executes(context -> handleStartMission(context.getSource().getSender()) ? 1 : 0)
+                .build(), "Begin the configured mission.");
+        registrar.register(Commands.literal("reset_mission")
+                .executes(context -> handleResetMission(context.getSource().getSender()) ? 1 : 0)
+                .build(), "Reset the active mission and stop telemetry.");
     }
 
     // ---------------------------------------------------------------- set_hive
 
-    private boolean handleSetHive(CommandSender sender, String[] args) {
-        if (args.length != 3) return false;
+    private boolean handleSetHive(CommandSender sender, Location loc) {
         if (isMissionActive()) {
             sender.sendMessage("Stop the active mission before changing its hive.");
             return true;
         }
-        Location loc = parseBlockLocation(sender, args, 0);
-        if (loc == null) {
-            sender.sendMessage("Invalid coordinates. Use numbers or ~ / ~n.");
-            return true;
-        }
-        if (!configuredBounds().contains(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) {
-            sender.sendMessage("Place the hive inside the configured mission bounds.");
-            return true;
-        }
         try {
+            MissionBounds bounds = boundsAt(loc);
             plugin.setHive(loc);
             sender.sendMessage("Glowing beehive placed at " + fmt(loc));
+            sender.sendMessage("Mission bounds: " + bounds.minX() + " " + bounds.minY() + " " + bounds.minZ()
+                    + " to " + (bounds.minX() + MissionBounds.WIDTH - 1) + " "
+                    + (bounds.minY() + MissionBounds.HEIGHT - 1) + " "
+                    + (bounds.minZ() + MissionBounds.DEPTH - 1) + ".");
+            Location target = plugin.getTarget();
+            if (target != null && (!target.getWorld().equals(loc.getWorld())
+                    || !bounds.contains(target.getBlockX(), target.getBlockY(), target.getBlockZ()))) {
+                sender.sendMessage("The existing target is outside the new mission area; move it with /set_target before starting.");
+            }
         } catch (IllegalArgumentException exception) {
             sender.sendMessage("Could not place hive: " + exception.getMessage());
         }
@@ -68,20 +93,20 @@ public class MissionCommands implements CommandExecutor {
 
     // -------------------------------------------------------------- set_target
 
-    private boolean handleSetTarget(CommandSender sender, String[] args) {
-        if (args.length != 3) return false;
+    private boolean handleSetTarget(CommandSender sender, Location loc) {
         if (isMissionActive()) {
             sender.sendMessage("Stop the active mission before changing its target.");
             return true;
         }
-        Location loc = parseBlockLocation(sender, args, 0);
-        if (loc == null) {
-            sender.sendMessage("Invalid coordinates. Use numbers or ~ / ~n.");
+        Location hive = plugin.getHive();
+        if (hive == null) {
+            sender.sendMessage("Set the hive first with /set_hive <x> <y> <z>.");
             return true;
         }
 
-        if (!configuredBounds().contains(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) {
-            sender.sendMessage("Place the target inside the configured mission bounds.");
+        if (!hive.getWorld().equals(loc.getWorld())
+                || !boundsAt(hive).contains(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) {
+            sender.sendMessage("Place the target inside the hive's mission bounds and world.");
             return true;
         }
         try {
@@ -95,35 +120,9 @@ public class MissionCommands implements CommandExecutor {
 
     // ------------------------------------------------------------ spawn_drones
 
-    private boolean handleSpawnDrones(CommandSender sender, String[] args) {
-        if (args.length < 1 || args.length > 3) return false;
+    private boolean handleSpawnDrones(CommandSender sender, int nDrones, int range, int speed) {
         if (isMissionActive()) {
             sender.sendMessage("Stop the active mission before spawning drones.");
-            return true;
-        }
-
-        int nDrones;
-        int range = 3; // default
-        int speed = 2; // default
-        try {
-            nDrones = Integer.parseInt(args[0]);
-            if (args.length >= 2) range = Integer.parseInt(args[1]);
-            if (args.length == 3) speed = Integer.parseInt(args[2]);
-        } catch (NumberFormatException e) {
-            sender.sendMessage("n_drones, drone_range and speed must be whole numbers.");
-            return true;
-        }
-
-        if (nDrones < 1 || nDrones > MAX_DRONES) {
-            sender.sendMessage("n_drones must be between 1 and " + MAX_DRONES + ".");
-            return true;
-        }
-        if (range < 1 || range > MAX_RANGE) {
-            sender.sendMessage("drone_range must be between 1 and " + MAX_RANGE + ".");
-            return true;
-        }
-        if (speed < 1 || speed > 5) {
-            sender.sendMessage("speed must be between 1 and 5 blocks per second.");
             return true;
         }
 
@@ -132,11 +131,7 @@ public class MissionCommands implements CommandExecutor {
             sender.sendMessage("Set the hive first with /set_hive.");
             return true;
         }
-        MissionBounds bounds = configuredBounds();
-        if (!bounds.contains(hive.getBlockX(), hive.getBlockY(), hive.getBlockZ())) {
-            sender.sendMessage("Set the hive inside the configured mission bounds before spawning drones.");
-            return true;
-        }
+        MissionBounds bounds = boundsAt(hive);
 
         int spawned = spawnDrones(hive, nDrones, range, speed, bounds);
         sender.sendMessage("Spawned " + spawned + "/" + nDrones + " drones around the hive.");
@@ -192,8 +187,7 @@ public class MissionCommands implements CommandExecutor {
 
     // ----------------------------------------------------------- start_mission
 
-    private boolean handleStartMission(CommandSender sender, String[] args) {
-        if (args.length != 0) return false;
+    private boolean handleStartMission(CommandSender sender) {
         if (isMissionActive()) {
             sender.sendMessage("A mission is already running.");
             return true;
@@ -217,7 +211,7 @@ public class MissionCommands implements CommandExecutor {
             sender.sendMessage("Spawn at least one drone before starting the mission.");
             return true;
         }
-        if (!plugin.getDroneManager().allDronesInBounds(configuredBounds(), hive.getWorld())) {
+        if (!plugin.getDroneManager().allDronesInBounds(boundsAt(hive), hive.getWorld())) {
             sender.sendMessage("Every drone must be available in the hive's world and inside the mission bounds.");
             return true;
         }
@@ -231,7 +225,7 @@ public class MissionCommands implements CommandExecutor {
             return true;
         }
 
-        MissionBounds bounds = configuredBounds();
+        MissionBounds bounds = boundsAt(hive);
         if (!bounds.contains(hive.getBlockX(), hive.getBlockY(), hive.getBlockZ())
                 || !bounds.contains(target.getBlockX(), target.getBlockY(), target.getBlockZ())) {
             sender.sendMessage("Hive and target must be inside the configured mission bounds.");
@@ -265,15 +259,12 @@ public class MissionCommands implements CommandExecutor {
         return session != null && session.isActive();
     }
 
-    private MissionBounds configuredBounds() {
-        return new MissionBounds(
-                plugin.getConfig().getInt("mission.bounds-min.x", -64),
-                plugin.getConfig().getInt("mission.bounds-min.y", 32),
-                plugin.getConfig().getInt("mission.bounds-min.z", -64));
+    private MissionBounds boundsAt(Location hive) {
+        return MissionBounds.centeredOn(hive.getBlockX(), hive.getBlockY(), hive.getBlockZ(),
+                hive.getWorld().getMinHeight(), hive.getWorld().getMaxHeight());
     }
 
-    private boolean handleResetMission(CommandSender sender, String[] args) {
-        if (args.length != 0) return false;
+    private boolean handleResetMission(CommandSender sender) {
         SessionManager session = plugin.getSessionManager();
         if (session == null) {
             sender.sendMessage("No mission session is available to reset. Restart the backend if it still has an old mission.");
@@ -290,33 +281,16 @@ public class MissionCommands implements CommandExecutor {
 
     // ----------------------------------------------------------------- helpers
 
-    /** Parses x y z starting at args[offset]; supports "~" and "~n" relative to the sender. */
-    private Location parseBlockLocation(CommandSender sender, String[] args, int offset) {
-        Location origin = originOf(sender);
-        World world = origin != null ? origin.getWorld() : Bukkit.getWorlds().getFirst();
-        try {
-            int x = parseCoord(args[offset], origin == null ? 0 : origin.getX(), origin != null);
-            int y = parseCoord(args[offset + 1], origin == null ? 0 : origin.getY(), origin != null);
-            int z = parseCoord(args[offset + 2], origin == null ? 0 : origin.getZ(), origin != null);
-            return new Location(world, x, y, z);
-        } catch (NumberFormatException e) {
-            return null;
+    private static CompletableFuture<Suggestions> suggestNumbers(SuggestionsBuilder builder, int... values) {
+        for (int value : values) {
+            if (Integer.toString(value).startsWith(builder.getRemaining())) builder.suggest(value);
         }
+        return builder.buildFuture();
     }
 
-    private int parseCoord(String s, double base, boolean relativeAllowed) {
-        if (s.startsWith("~")) {
-            if (!relativeAllowed) throw new NumberFormatException("relative coords need a position");
-            double offset = s.length() > 1 ? Double.parseDouble(s.substring(1)) : 0;
-            return (int) Math.floor(base + offset);
-        }
-        return (int) Math.floor(Double.parseDouble(s));
-    }
-
-    private Location originOf(CommandSender sender) {
-        if (sender instanceof Entity e) return e.getLocation();
-        if (sender instanceof BlockCommandSender b) return b.getBlock().getLocation();
-        return null; // console
+    private Location position(CommandContext<CommandSourceStack> context) throws CommandSyntaxException {
+        return context.getArgument("position", BlockPositionResolver.class).resolve(context.getSource())
+                .toLocation(context.getSource().getLocation().getWorld());
     }
 
     private String fmt(Location l) {

@@ -22,6 +22,24 @@ public final class FlightTestPlugin extends JavaPlugin {
 
     @Override
     public void onEnable() {
+        Objects.requireNonNull(getCommand("test_mission_setup")).setExecutor((sender, command, label, args) -> {
+            if (args.length != 0) return false;
+            var commands = getServer().getCommandMap();
+            var counts = Set.copyOf(Objects.requireNonNull(commands.tabComplete(sender, "spawn_drones ")));
+            var filtered = Set.copyOf(Objects.requireNonNull(commands.tabComplete(sender, "spawn_drones 6")));
+            var ranges = Set.copyOf(Objects.requireNonNull(commands.tabComplete(sender, "spawn_drones 5 ")));
+            var speeds = Set.copyOf(Objects.requireNonNull(commands.tabComplete(sender, "spawn_drones 5 1 ")));
+            boolean pass = counts.equals(Set.of("1", "5", "10", "20", "64"))
+                    && filtered.equals(Set.of("64"))
+                    && ranges.equals(Set.of("1", "2", "3"))
+                    && speeds.equals(Set.of("1", "2", "3", "4", "5"));
+            String message = "SETUP_TEST completion " + (pass ? "PASS" : "FAIL")
+                    + " counts=" + counts + " filtered=" + filtered + " ranges=" + ranges + " speeds=" + speeds;
+            if (pass) getLogger().info(message);
+            else getLogger().severe(message);
+            sender.sendMessage(message);
+            return true;
+        });
         Objects.requireNonNull(getCommand("test_drone_flight")).setExecutor((sender, command, label, args) -> {
             if (args.length != 4 || !Set.of("up", "down", "horizontal", "blocked", "ceiling").contains(args[0]))
                 return false;
