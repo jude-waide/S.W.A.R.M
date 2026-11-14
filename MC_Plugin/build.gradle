@@ -2,20 +2,26 @@ plugins {
     id 'java'
 }
 
-group 'me.jetcobblestone'
-version '1.0-SNAPSHOT'
+group = 'me.jetcobblestone'
+version = '1.0-SNAPSHOT'
 
 repositories {
     mavenCentral()
-    maven(url = "https://repo.papermc.io/repository/maven-public/") {
-        name = "papermc"
+    maven {
+        name = 'papermc'
+        url = 'https://repo.papermc.io/repository/maven-public/'
     }
 }
 
 dependencies {
+    compileOnly 'io.papermc.paper:paper-api:26.3.build.+'
+
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.8.1'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.8.1'
-    compileOnly 'io.papermc.paper:paper-api:26.3.build.+"'
+}
+
+java {
+    toolchain.languageVersion.set(JavaLanguageVersion.of(25))
 }
 
 test {
