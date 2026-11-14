@@ -3,6 +3,7 @@ package me.jetcobblestone;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
+import org.bukkit.WorldType;
 import org.bukkit.block.Block;
 import org.bukkit.command.BlockCommandSender;
 import org.bukkit.command.Command;
@@ -10,6 +11,7 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Bee;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 
 import java.util.concurrent.ThreadLocalRandom;
@@ -46,15 +48,11 @@ public class MissionCommands implements CommandExecutor {
             sender.sendMessage("Invalid coordinates. Use numbers or ~ / ~n.");
             return true;
         }
-        setHive(sender, loc);
+        plugin.setHive(loc);
+        sender.sendMessage("Hive set to " + fmt(loc));
         return true;
     }
 
-    private void setHive(CommandSender sender, Location hive) {
-        // Stored so spawn_drones can use it; add further setup (marker block, etc.) here.
-        plugin.setHive(hive);
-        sender.sendMessage("Hive set to " + fmt(hive));
-    }
 
     // -------------------------------------------------------------- set_target
 
@@ -65,24 +63,24 @@ public class MissionCommands implements CommandExecutor {
             sender.sendMessage("Invalid coordinates. Use numbers or ~ / ~n.");
             return true;
         }
-        setTarget(sender, loc);
-        return true;
-    }
 
-    private void setTarget(CommandSender sender, Location target) {
-        // TODO: implement
+        sender.sendMessage("Target set to " + fmt(loc));
+        plugin.setTarget(loc);
+        return true;
     }
 
     // ------------------------------------------------------------ spawn_drones
 
     private boolean handleSpawnDrones(CommandSender sender, String[] args) {
-        if (args.length < 1 || args.length > 2) return false;
+        if (args.length < 1 || args.length > 3) return false;
 
         int nDrones;
         int range = 3; // default
+        int speed = 2; // default
         try {
             nDrones = Integer.parseInt(args[0]);
             if (args.length == 2) range = Integer.parseInt(args[1]);
+            if (args.length == 3) speed = Integer.parseInt(args[2]);
         } catch (NumberFormatException e) {
             sender.sendMessage("n_drones and drone_range must be whole numbers.");
             return true;
@@ -103,7 +101,7 @@ public class MissionCommands implements CommandExecutor {
             return true;
         }
 
-        int spawned = spawnDrones(hive, nDrones, range);
+        int spawned = spawnDrones(hive, nDrones, range, speed);
         sender.sendMessage("Spawned " + spawned + "/" + nDrones + " drones around the hive.");
         if (spawned < nDrones) {
             sender.sendMessage("Not enough free space within range " + range + ".");
@@ -112,7 +110,7 @@ public class MissionCommands implements CommandExecutor {
     }
 
     /** Spawns bees in distinct free cells within +-range of the hive. Returns how many spawned. */
-    private int spawnDrones(Location hive, int count, int range) {
+    private int spawnDrones(Location hive, int count, int range, int speed) {
         World world = hive.getWorld();
         int hx = hive.getBlockX(), hy = hive.getBlockY(), hz = hive.getBlockZ();
 
@@ -138,10 +136,10 @@ public class MissionCommands implements CommandExecutor {
             Location spawnLoc = cell.getLocation().add(0.5, 0.0, 0.5);
             Bee bee = world.spawn(spawnLoc, Bee.class, b -> {
                 b.setPersistent(true);
-                b.setRemoveWhenFarAway(false);
-                // TODO: install your DroneAI here (removes vanilla goals)
+                b.setPersistenceRequired(true);
             });
-            plugin.getDrones().add(bee);
+            plugin.getDroneManager().add_drone(bee, speed);
+
             spawned++;
         }
         return spawned;
@@ -158,20 +156,38 @@ public class MissionCommands implements CommandExecutor {
 
     private boolean handleStartMission(CommandSender sender, String[] args) {
         if (args.length != 1) return false;
-        startMission(sender, args[0]);
+
+        Location hive = plugin.getHive();
+        if (hive == null) {
+            sender.sendMessage("Set the hive first with /set_hive.");
+            return true;
+        }
+        Location target = plugin.getTarget();
+        if (target == null) {
+            sender.sendMessage("Set the target first with /set_target.");
+            return true;
+        }
+
+        new SessionManager(
+                plugin,
+                plugin.getDroneManager(),
+                hive,
+                target,
+                args[0],
+                plugin.get_key(),
+
+                );
+
         return true;
     }
 
-    private void startMission(CommandSender sender, String url) {
-        // TODO: implement
-    }
 
     // ----------------------------------------------------------------- helpers
 
     /** Parses x y z starting at args[offset]; supports "~" and "~n" relative to the sender. */
     private Location parseBlockLocation(CommandSender sender, String[] args, int offset) {
         Location origin = originOf(sender);
-        World world = origin != null ? origin.getWorld() : Bukkit.getWorlds().get(0);
+        World world = origin != null ? origin.getWorld() : Bukkit.getWorlds().getFirst();
         try {
             int x = parseCoord(args[offset], origin == null ? 0 : origin.getX(), origin != null);
             int y = parseCoord(args[offset + 1], origin == null ? 0 : origin.getY(), origin != null);

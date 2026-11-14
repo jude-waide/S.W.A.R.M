@@ -12,7 +12,7 @@ commands:
     usage: /<command> <x> <y> <z>
   spawn_drones:
     description: Spawns drones around the hive.
-    usage: /<command> <n_drones> [drone_range]
+    usage: /<command> <n_drones> [drone_range] [speed]
   start_mission:
     description: Begins a mission against the central server.
     usage: /<command> <url>

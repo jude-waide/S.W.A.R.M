@@ -5,6 +5,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.net.URI;
@@ -12,12 +13,15 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class SessionManager {
 
     private final JavaPlugin plugin;
     private final DroneManager droneManager;
+    private final Location hive;
+    private final Location target;
     private final String baseUrl;      // e.g. "https://myapp.azurewebsites.net"
     private final String pluginKey;    // from config.yml, never logged
     private final String missionId;    // the UUID you used at initialisation
@@ -34,12 +38,16 @@ public class SessionManager {
     private String pendingBody = null;      // frame awaiting acceptance (for exact retry)
     private int pendingSequence = -1;
 
-    public SessionManager(JavaPlugin plugin, DroneManager droneManager, String baseUrl, String pluginKey, String missionId) {
+    public SessionManager(JavaPlugin plugin, DroneManager droneManager, Location hive, Location target, String baseUrl, String pluginKey) {
         this.plugin = plugin;
         this.droneManager = droneManager;
+        this.hive = hive;
+        this.target = target;
         this.baseUrl = baseUrl;
         this.pluginKey = pluginKey;
-        this.missionId = missionId;
+        this.missionId = UUID.randomUUID().toString();
+
+        // send initialisation
     }
 
     /** Call from the main thread roughly every 10 ticks (500 ms). */

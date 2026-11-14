@@ -15,7 +15,9 @@ public final class Main extends JavaPlugin {
 
     private Location hive;      // command centre (block cell), null until set
     private Location target;    // target (block cell), null until set
-    private final List<Bee> drones = new ArrayList<>();
+    private DroneManager droneManager = new DroneManager(this);
+    private SessionManager sessionManager;
+    private final List<DroneAI> drones = new ArrayList<>();
 
     @Override
     public void onEnable() {
@@ -31,7 +33,11 @@ public final class Main extends JavaPlugin {
     public Location getTarget() { return target; }
     public void setTarget(Location target) { this.target = target; }
 
-    public List<Bee> getDrones() { return drones; }
+    public DroneManager getDroneManager() {
+        return droneManager;
+    }
 
-
+    public SessionManager getSessionManager() {
+        return sessionManager;
+    }
 }

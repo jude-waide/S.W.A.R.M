@@ -4,13 +4,12 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
-import org.apache.commons.lang3.ObjectUtils;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Entity;
-import org.bukkit.plugin.Plugin;
-
+import org.bukkit.entity.Mob;
+import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.AbstractMap;
 import java.util.HashMap;
@@ -19,12 +18,19 @@ import java.util.UUID;
 
 
 public class DroneManager {
+    private int next_id = 0;
     private final AbstractMap<Integer, DroneAI> drones = new HashMap<>();
     private final int drone_range = 3;
-    private final Plugin plugin;
+    private final JavaPlugin plugin;
 
-    public DroneManager (Plugin plugin) {
+    public DroneManager (JavaPlugin plugin) {
         this.plugin = plugin;
+    }
+
+    public void add_drone(Mob mob, double speed) {
+        DroneAI drone = new DroneAI(plugin, mob, speed);
+        drone.install();
+        drones.put(next_id, drone);
     }
 
     public JsonArray getInfo() {
