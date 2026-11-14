@@ -951,6 +951,8 @@ public sealed class MissionService
     private static List<Block> FindRoute(Drone drone, Block start, Block? goal, Mission mission, IReadOnlySet<Block>? reserved = null)
     {
         if (goal is null || start == goal.Value) return [];
+        var localSolids = drone.KnownCells.Where(pair => pair.Value.Solid).Select(pair => pair.Key).ToHashSet();
+        var solidHive = goal.Value == mission.Tower && localSolids.Contains(mission.Tower);
         var queue = new Queue<Block>();
         var previous = new Dictionary<Block, Block>();
         var visited = new HashSet<Block> { start };
@@ -967,7 +969,8 @@ public sealed class MissionService
                     !visited.Add(next))
                     continue;
                 previous[next] = current;
-                if (next == goal.Value)
+                if (next == goal.Value || (solidHive && IsInTowerNeighbourhood(mission, next) &&
+                    CanCommunicate(mission.Tower, next, localSolids)))
                 {
                     var path = new List<Block> { next };
                     while (path[^1] != start)

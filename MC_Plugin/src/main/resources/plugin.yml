@@ -5,10 +5,10 @@ api-version: '1.21'
 
 commands:
   set_hive:
-    description: Sets the command centre (tower) location.
+    description: Places a glowing beehive at the command centre location.
     usage: /<command> <x> <y> <z>
   set_target:
-    description: Sets the target location.
+    description: Places a glowing honey-block search target.
     usage: /<command> <x> <y> <z>
   spawn_drones:
     description: Spawns drones around the hive.

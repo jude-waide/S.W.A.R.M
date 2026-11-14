@@ -52,8 +52,16 @@ public class MissionCommands implements CommandExecutor {
             sender.sendMessage("Invalid coordinates. Use numbers or ~ / ~n.");
             return true;
         }
-        plugin.setHive(loc);
-        sender.sendMessage("Hive set to " + fmt(loc));
+        if (!configuredBounds().contains(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) {
+            sender.sendMessage("Place the hive inside the configured mission bounds.");
+            return true;
+        }
+        try {
+            plugin.setHive(loc);
+            sender.sendMessage("Glowing beehive placed at " + fmt(loc));
+        } catch (IllegalArgumentException exception) {
+            sender.sendMessage("Could not place hive: " + exception.getMessage());
+        }
         return true;
     }
 
@@ -72,8 +80,16 @@ public class MissionCommands implements CommandExecutor {
             return true;
         }
 
-        sender.sendMessage("Target set to " + fmt(loc));
-        plugin.setTarget(loc);
+        if (!configuredBounds().contains(loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) {
+            sender.sendMessage("Place the target inside the configured mission bounds.");
+            return true;
+        }
+        try {
+            plugin.setTarget(loc);
+            sender.sendMessage("Glowing honey target placed at " + fmt(loc));
+        } catch (IllegalArgumentException exception) {
+            sender.sendMessage("Could not place target: " + exception.getMessage());
+        }
         return true;
     }
 

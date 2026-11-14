@@ -66,10 +66,14 @@ public sealed class SurfaceExplorationTests
         Assert.True(simulation.Service.GetSnapshot().TargetReported);
     }
 
-    [Fact]
-    public void ScoutsReturnToUploadTerrainAndThenResumeExploration()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ScoutsReturnToUploadTerrainAndThenResumeExploration(bool solidHive)
     {
-        var simulation = new Simulation((_, y, _) => y <= 10);
+        var simulation = new Simulation(
+            (x, y, z) => y <= 10 || (solidHive && x == 0 && y == 12 && z == 0),
+            start: new() { X = 0.5, Y = solidHive ? 13.5 : 12.5, Z = 0.5 });
         var sawUploadReturn = false;
         var resumed = false;
         var terrainBeforeReturn = 0;
@@ -94,6 +98,27 @@ public sealed class SurfaceExplorationTests
         Assert.True(resumed, "A successful upload must allow exploration to resume.");
     }
 
+    [Fact]
+    public void TargetReportingAndRecoveryReturnToAFreeNeighbourOfASolidHive()
+    {
+        var simulation = new Simulation(
+            (x, y, z) => y <= 10 || (y == 12 && z == 0 && (x == 0 || x == 8)),
+            new() { X = 8, Y = 12, Z = 0 },
+            new() { X = 0.5, Y = 13.5, Z = 0.5 });
+        simulation.Position = new() { X = 5.5, Y = 12.5, Z = 0.5 };
+
+        var command = Assert.Single(simulation.Step().Commands);
+        Assert.Equal(new BlockPoint { X = 4, Y = 12, Z = 0 }, command.Destination);
+        Assert.NotNull(simulation.Service.GetDroneDebug("SCOUT").KnownTarget);
+        Assert.False(simulation.Service.GetSnapshot().TargetReported);
+        for (var step = 0; step < 12 && simulation.Service.GetSnapshot().Phase != "complete"; step++)
+            simulation.Step();
+
+        Assert.Equal("complete", simulation.Service.GetSnapshot().Phase);
+        Assert.True(simulation.Service.GetSnapshot().TargetReported);
+        Assert.Equal(1, simulation.Service.GetSnapshot().RecoveredCount);
+    }
+
     private static void AssertNearKnownSurface(Simulation simulation, MovementCommand command)
     {
         var destination = command.Destination;
@@ -116,9 +141,10 @@ public sealed class SurfaceExplorationTests
         public MissionService Service { get; } = new();
         public DronePosition Position { get; set; } = new() { X = 0.5, Y = 12.5, Z = 0.5 };
 
-        public Simulation(Func<int, int, int, bool> solid, BlockPoint? target = null)
+        public Simulation(Func<int, int, int, bool> solid, BlockPoint? target = null, DronePosition? start = null)
         {
             _solid = solid;
+            if (start is not null) Position = start;
             Service.Initialize(new()
             {
                 ProtocolVersion = 1,

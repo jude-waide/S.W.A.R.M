@@ -23,12 +23,13 @@ Start the web app first, using the same local-only plugin key as
 /set_hive 352 81 -128
 /set_target 392 76 -98
 /spawn_drones 5 1 2
-/tp @e[type=minecraft:bee,tag=drone_swarm] 352.5 81.25 -127.5
+/tp @e[type=minecraft:bee,tag=drone_swarm] 352.5 82.25 -127.5
 /start_mission
 ```
 
 The explicit teleport is **setup only**, not movement execution: it places all
-new units in clear direct hive range on uneven terrain. The planner assigns
+new units one cell **above the physical beehive**, in clear direct hive range
+on uneven terrain. Never place bees inside the hive block. The planner assigns
 distinct exits to units initially sharing a cell. Wait for mission acceptance
 in the server log and `MINECRAFT` connected in the dashboard.
 
@@ -47,7 +48,7 @@ the reset. This clears mission/map/command state and stops the units; it does
 not return them to the hive or respawn dead bees. Then:
 
 ```text
-/tp @e[type=minecraft:bee,tag=drone_swarm] 352.5 81.25 -127.5
+/tp @e[type=minecraft:bee,tag=drone_swarm] 352.5 82.25 -127.5
 /set_target 392 76 -98
 /start_mission
 ```
@@ -55,6 +56,14 @@ not return them to the hive or respawn dead bees. Then:
 The hive remains configured until Paper restarts. To test fast target reporting
 and recovery, use `/set_target 354 81 -128` before `start_mission`. Reset again
 and restore the distant target for exploration.
+
+`set_hive` creates a real beehive and `set_target` creates a real honey block,
+each with a bright glowing entity outline and floating label. Use free,
+non-liquid cells; solid terrain is not overwritten. The labels are for Minecraft
+players only: bees still have to discover/report the target through their local
+observations. Reset leaves both landmarks visible. Moving one or cleanly
+stopping Paper removes its display entities and restores the original block
+unless the player changed it.
 
 Never teleport active search units: reset and wait first. If units died, reset
 prunes their unavailable entries; `spawn_drones <missing-count> 1 2` can replenish
@@ -69,6 +78,8 @@ them before the setup teleport and next start.
 - **OVERALL VIEW**: debug overview of all observed terrain and live unit positions.
 - **HEIGHT FILTER**: reveal lower levels or cut away upper terrain.
 - The white terrain outline now includes vertical corner connections.
+- Nearer known terrain hides obstructed white outlines.
+- Unit details appear only after selection; the compact card has a close button.
 - Managed bees glow and have the `drone_swarm` entity tag.
 
 Useful operator commands:
@@ -104,7 +115,7 @@ from the uncommitted server configuration:
 node 'C:\repos\Durhack\DroneSwarm.LocalTest\rcon.mjs' 'reset_mission'
 # Wait for reset confirmation before the next commands.
 node 'C:\repos\Durhack\DroneSwarm.LocalTest\rcon.mjs' `
-  'tp @e[type=minecraft:bee,tag=drone_swarm] 352.5 81.25 -127.5' `
+  'tp @e[type=minecraft:bee,tag=drone_swarm] 352.5 82.25 -127.5' `
   'start_mission'
 ```
 

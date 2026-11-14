@@ -69,6 +69,22 @@ resets the backend mission and makes the current drones available for another
 run. If the plugin was restarted and no longer has the mission ID, restart the
 web app to clear its in-memory mission before starting another one.
 
+`set_hive` places a real beehive block; `set_target` places a real honey block.
+Choose free, non-liquid cells inside the mission bounds. Both get full-bright,
+glowing block-display outlines and floating `HIVE` / `SEARCH TARGET` labels.
+These display entities provide the outline because Minecraft's glowing effect
+does not apply directly to blocks. They do not reveal the target to the backend:
+scouts must still discover and report it normally.
+
+The blocks are physical obstacles. Do not teleport drones into the hive cell;
+use the air cell directly above it when repositioning a reset mission.
+Upload and recovery routes use a free, unobstructed cell within hive range
+instead of trying to enter the solid beehive.
+Moving a landmark or cleanly stopping Paper removes its displays and restores
+the original block, unless a player changed it. Landmark chunks stay loaded
+while configured so their glowing displays remain available. Resetting a mission
+keeps the configured landmarks in place.
+
 For the prepared normal-terrain world, exact start/reset commands, and the
 local server startup script, see the [local test notebook](docs/integration/LOCAL_TEST_NOTEBOOK.md).
 
@@ -121,9 +137,11 @@ The spatial telemetry view fills the window. Open the left-edge side tab for
 mission statistics, the drone roster, connection information, and view controls.
 The full-height drawer keeps compact mission counts, drone states, and view
 controls, without repeated descriptions or coordinate readouts. It scrolls
-without resizing the terrain view. Unit inspection stays in
-its own expandable overlay; selecting a drone opens inspection without closing
-the drawer. The header's light indicates backend connectivity without a text label.
+without resizing the terrain view. Unit inspection is hidden until a drone is
+selected, then opens as a compact, closable card without closing the drawer.
+Closing it keeps the selected camera target; select the unit again to reopen.
+The local-knowledge preview is expandable inside the card. The header's light
+indicates backend connectivity without a text label.
 Click **HEIGHT FILTER** at the bottom right to open a vertical cutoff slider,
 with an orange fill and minimum/maximum height markers. The header uses a
 seven-cell honeycomb mark; hovering over it shows the backend's online/offline
@@ -171,8 +189,11 @@ Drone tags are hidden when the hive's hexagonal body blocks them and return when
 the camera or drone moves clear. Terrain outlines are white; the interface uses
 an amber/orange honeycomb palette. Terrain wireframes include the vertical corners
 and exposed side/bottom boundaries of observed solid cells, without interior
-coplanar seams or connections across unobserved gaps. The height filter applies
-to all three views.
+coplanar seams or connections across unobserved gaps. Depth-only faces from those
+same known solids hide white outlines behind nearer terrain; they do not add
+unknown terrain or change the wireframe palette. Colored mission markers remain
+readable above that terrain layer. The height filter applies to
+both the outlines and their occluding faces in all three views.
 
 **SCOUT VIEW** shows only the selected unit's accumulated solid-cell knowledge,
 its own last observed position and a target it actually knows about. Select
