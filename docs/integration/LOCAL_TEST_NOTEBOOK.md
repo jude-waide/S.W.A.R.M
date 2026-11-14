@@ -26,6 +26,10 @@ inside the new area and reposition the drones before starting.
 
 ## First search after starting Paper
 
+For this local-only setup, set `backend.base-url` in the server's
+`plugins\DroneSim\config.yml` to `http://127.0.0.1:5000` before starting Paper.
+New plugin configurations default to the hosted Azure app instead.
+
 Start the web app first, using the same local-only plugin key as
 `plugins\DroneSim\config.yml`; never commit that key. Join Minecraft, then:
 

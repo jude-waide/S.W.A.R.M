@@ -80,8 +80,10 @@ subscription even when launched from the right one, so always pass
 
 Open the app's HTTPS URL and check that the dashboard connects. Verify
 `/api/public/snapshot` returns JSON and `/api/plugin/status` returns 401 without
-a key. Set the Minecraft plugin's `backend.base-url` to the app's HTTPS URL
-and `backend.plugin-key` to the matching secret, then restart the plugin.
+a key. New Minecraft plugin configurations already default `backend.base-url`
+to the demo app's HTTPS URL. Existing server configurations are preserved;
+update their URL manually if needed. Set `backend.plugin-key` to the matching
+secret, then restart the plugin.
 The dashboard stays empty until the plugin starts a mission.
 
 Delete the dedicated resource group when finished to stop charges. Stopping

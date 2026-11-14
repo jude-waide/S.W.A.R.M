@@ -44,14 +44,20 @@ cd MC_Plugin
 
 Copy `MC_Plugin\build\libs\MC_Plugin-1.0-SNAPSHOT.jar` into the Paper server's
 `plugins` directory and start the server once. Edit
-`plugins\DroneSim\config.yml`; set `backend.plugin-key` to the same local-only
-key used by ASP.NET Core. The default backend URL is
-`http://127.0.0.1:5000`. `set_hive` automatically centers a 128x64x128 mission
+`plugins\DroneSim\config.yml`; the default backend URL is
+`https://drone-swarm-durhack2026.azurewebsites.net`. Set `backend.plugin-key`
+to the hosted app's `PLUGIN_KEY` from Azure; never commit the secret.
+Existing server configurations are not overwritten when updating the plugin:
+change `backend.base-url` manually if it still points at localhost.
+For local development, set `backend.base-url` to `http://127.0.0.1:5000`
+and use the same local-only key as ASP.NET Core.
+`set_hive` automatically centers a 128x64x128 mission
 area on the hive: minimum X/Z are hive X/Z minus 64 and minimum Y is hive Y
 minus 32, shifted inward if necessary to stay within the world's height.
 The old `mission.bounds-min` configuration is no longer used.
 
-On the same computer, start the built web app on port 5000:
+For local development on the same computer, start the built web app on port 5000
+(skip this when using the hosted Azure app):
 
 ```powershell
 $env:PLUGIN_KEY = "use-a-local-demo-key"
