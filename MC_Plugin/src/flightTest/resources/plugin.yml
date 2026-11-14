@@ -1,0 +1,12 @@
+name: DroneFlightTests
+version: '1.0'
+main: me.jetcobblestone.test.FlightTestPlugin
+api-version: '1.21'
+depend: [DroneSim]
+commands:
+  test_drone_flight:
+    usage: /test_drone_flight <up|down|horizontal|blocked|ceiling> <x> <y> <z>
+    permission: dronesim.flight-tests
+permissions:
+  dronesim.flight-tests:
+    default: op

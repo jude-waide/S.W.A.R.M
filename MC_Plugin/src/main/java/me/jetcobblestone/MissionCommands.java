@@ -91,10 +91,10 @@ public class MissionCommands implements CommandExecutor {
         int speed = 2; // default
         try {
             nDrones = Integer.parseInt(args[0]);
-            if (args.length == 2) range = Integer.parseInt(args[1]);
+            if (args.length >= 2) range = Integer.parseInt(args[1]);
             if (args.length == 3) speed = Integer.parseInt(args[2]);
         } catch (NumberFormatException e) {
-            sender.sendMessage("n_drones and drone_range must be whole numbers.");
+            sender.sendMessage("n_drones, drone_range and speed must be whole numbers.");
             return true;
         }
 
@@ -104,6 +104,10 @@ public class MissionCommands implements CommandExecutor {
         }
         if (range < 1 || range > MAX_RANGE) {
             sender.sendMessage("drone_range must be between 1 and " + MAX_RANGE + ".");
+            return true;
+        }
+        if (speed < 1 || speed > 5) {
+            sender.sendMessage("speed must be between 1 and 5 blocks per second.");
             return true;
         }
 
@@ -151,7 +155,7 @@ public class MissionCommands implements CommandExecutor {
         int spawned = 0;
         for (Block cell : candidates) {
             if (spawned >= count) break;
-            Location spawnLoc = cell.getLocation().add(0.5, 0.0, 0.5);
+            Location spawnLoc = cell.getLocation().add(0.5, 0.2, 0.5);
             Bee bee = world.spawn(spawnLoc, Bee.class, b -> {
                 b.setPersistent(true);
                 b.setPersistenceRequired(true);

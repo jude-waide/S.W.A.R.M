@@ -27,3 +27,19 @@ java {
 test {
     useJUnitPlatform()
 }
+
+sourceSets {
+    flightTest {
+        compileClasspath += sourceSets.main.output
+    }
+}
+
+configurations {
+    flightTestCompileOnly.extendsFrom compileOnly
+}
+
+tasks.register('flightTestJar', Jar) {
+    dependsOn flightTestClasses
+    archiveClassifier = 'flight-tests'
+    from sourceSets.flightTest.output
+}

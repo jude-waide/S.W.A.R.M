@@ -1,101 +1,109 @@
 package me.jetcobblestone;
 
-import com.destroystokyo.paper.entity.ai.Goal;
-import com.destroystokyo.paper.entity.ai.GoalKey;
-import com.destroystokyo.paper.entity.ai.GoalType;
-import org.bukkit.Bukkit;
 import org.bukkit.Location;
-import org.bukkit.NamespacedKey;
+import org.bukkit.block.Block;
 import org.bukkit.entity.Mob;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.scheduler.BukkitTask;
+import org.bukkit.util.BoundingBox;
+import org.bukkit.util.Vector;
 
-import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.UUID;
 
-/** Replaces a Mob's vanilla AI with a single "move to this block cell" goal. */
-public class DroneAI implements Goal<Mob> {
-
+/** Executes the backend's adjacent waypoints without vanilla bee navigation. */
+public class DroneAI {
     public enum Status { COMPLETED, BLOCKED, FAILED }
 
-    /** Terminal result to report in the next observation frame's commandResult. */
     public record Result(UUID commandId, Status status, String reason) {}
 
-    private static final double ARRIVE_DISTANCE_SQ = 0.5 * 0.5;
-    private static final int NO_PROGRESS_TICKS = 100;       // 5 simulation seconds
-    private static final double PROGRESS_EPSILON_SQ = 0.05 * 0.05;
+    private static final double ARRIVE_DISTANCE_SQ = 0.06 * 0.06;
+    private static final int NO_PROGRESS_TICKS = 100;
+    private static final double PROGRESS_EPSILON_SQ = 0.01 * 0.01;
 
+    private final JavaPlugin plugin;
     private final Mob mob;
-    private final GoalKey<Mob> key;
     private final double speed;
-
-    // Main-thread state only
-    private UUID commandId;                 // outstanding command, or null
-    private Location target;                // centre of destination cell
-    private Result pendingResult;           // terminal result awaiting acknowledgement
+    private final boolean originalAI;
+    private final boolean originalAware;
+    private final boolean originalGravity;
+    private final boolean originalCollidable;
+    private final boolean originalGlowing;
     private final Set<UUID> seenCommands = new HashSet<>();
 
+    private BukkitTask flightTask;
+    private UUID commandId;
+    private Location target;
+    private Result pendingResult;
     private double bestDistSq;
     private int ticksSinceProgress;
 
     public DroneAI(JavaPlugin plugin, Mob mob, double speed) {
+        this.plugin = plugin;
         this.mob = mob;
         this.speed = speed;
-        this.key = GoalKey.of(Mob.class, new NamespacedKey(plugin, "drone_move"));
+        this.originalAI = mob.hasAI();
+        this.originalAware = mob.isAware();
+        this.originalGravity = mob.hasGravity();
+        this.originalCollidable = mob.isCollidable();
+        this.originalGlowing = mob.isGlowing();
     }
 
     public Mob getMob() {
         return mob;
     }
 
-    /** Remove all vanilla goals and install this one. Call once per drone. */
     public void install() {
-        var goals = Bukkit.getMobGoals();
-        goals.removeAllGoals(mob);          // movement, targeting, hive, pollination...
-        goals.addGoal(mob, 0, this);
-
+        mob.getPathfinder().stopPathfinding();
+        // NoAI also disables velocity integration for flying mobs. Awareness only
+        // disables autonomous decisions, leaving real collision/flight physics active.
+        mob.setAI(true);
+        mob.setAware(false);
+        mob.setGravity(false);
+        mob.setCollidable(false);
+        mob.setGlowing(true);
         mob.setPersistent(true);
         mob.setRemoveWhenFarAway(false);
+        mob.addScoreboardTag("drone_swarm");
+        mob.setVelocity(new Vector());
+        flightTask = plugin.getServer().getScheduler().runTaskTimer(plugin, this::tick, 1L, 1L);
     }
 
     public void uninstall() {
-        Bukkit.getMobGoals().removeGoal(mob, key);
-        mob.getPathfinder().stopPathfinding();
+        if (flightTask != null) {
+            flightTask.cancel();
+            flightTask = null;
+        }
+        mob.setVelocity(new Vector());
+        mob.setAI(originalAI);
+        mob.setAware(originalAware);
+        mob.setGravity(originalGravity);
+        mob.setCollidable(originalCollidable);
+        mob.setGlowing(originalGlowing);
     }
 
-    /**
-     * Accept a command from the server response. The server repeats outstanding
-     * commands until a terminal result arrives, so this ignores repeats and
-     * executes each ID at most once. Destination is an integer block cell.
-     */
     public void issueMove(UUID id, int x, int y, int z) {
         if (id.equals(commandId) || seenCommands.contains(id)) return;
-        if (commandId != null) return;      // one move outstanding per drone
-
+        if (commandId != null || pendingResult != null) {
+            plugin.getLogger().warning("Rejected overlapping movement command for drone " + mob.getUniqueId());
+            return;
+        }
         seenCommands.add(id);
         commandId = id;
-        target = new Location(mob.getWorld(), x + 0.5, y + 0.5, z + 0.5);
-
-        // Reject early if the destination cell is solid
-        if (!target.getBlock().isPassable() || target.getBlock().isLiquid()) {
+        // Entity locations are feet positions. Centre the whole bee inside its cell.
+        target = new Location(mob.getWorld(), x + 0.5, y + (1 - mob.getHeight()) / 2, z + 0.5);
+        Block destination = target.getBlock();
+        if (!destination.isPassable() || destination.isLiquid()) {
             finish(Status.BLOCKED, "Destination is obstructed");
             return;
         }
-
         bestDistSq = mob.getLocation().distanceSquared(target);
         ticksSinceProgress = 0;
-
-        // Ask the pathfinder for a route; false means no path found
-        if (!mob.getPathfinder().moveTo(target, speed)) {
-            finish(Status.BLOCKED, "No path to destination");
-        }
     }
 
-    /** Result to put in commandResult. Keep reporting until the server acknowledges it. */
     public Result getPendingResult() { return pendingResult; }
 
-    /** Call when the response's acknowledgedResults contains this command ID. */
     public void acknowledge(UUID id) {
         if (pendingResult != null && pendingResult.commandId().equals(id)) {
             pendingResult = null;
@@ -105,7 +113,7 @@ public class DroneAI implements Goal<Mob> {
     public boolean isBusy() { return commandId != null; }
 
     public void reset() {
-        mob.getPathfinder().stopPathfinding();
+        mob.setVelocity(new Vector());
         commandId = null;
         target = null;
         pendingResult = null;
@@ -114,26 +122,26 @@ public class DroneAI implements Goal<Mob> {
         bestDistSq = 0;
     }
 
-    // ---- Paper Goal implementation ----
-
-    @Override
-    public boolean shouldActivate() {
-        return commandId != null;
-    }
-
-    @Override
-    public void tick() {
-        if (commandId == null) return;
-
-        Location here = mob.getLocation();
-        double distSq = here.distanceSquared(target);
-
-        if (distSq <= ARRIVE_DISTANCE_SQ) {
-            finish(Status.COMPLETED, null);
+    private void tick() {
+        if (!mob.isValid()) {
+            if (commandId != null) finish(Status.FAILED, "Drone entity is no longer available");
+            if (flightTask != null) flightTask.cancel();
+            return;
+        }
+        if (commandId == null) {
+            mob.setVelocity(new Vector());
             return;
         }
 
-        // Progress / stall detection
+        Location here = mob.getLocation();
+        double distSq = here.distanceSquared(target);
+        if (distSq <= ARRIVE_DISTANCE_SQ
+                && here.getBlockX() == target.getBlockX()
+                && here.getBlockY() == target.getBlockY()
+                && here.getBlockZ() == target.getBlockZ()) {
+            finish(Status.COMPLETED, null);
+            return;
+        }
         if (distSq < bestDistSq - PROGRESS_EPSILON_SQ) {
             bestDistSq = distSq;
             ticksSinceProgress = 0;
@@ -142,26 +150,32 @@ public class DroneAI implements Goal<Mob> {
             return;
         }
 
-        // Pathfinder can drop its path (e.g. recalculation), so re-issue if idle
-        if (mob.getPathfinder().getCurrentPath() == null) {
-            if (!mob.getPathfinder().moveTo(target, speed)) {
-                finish(Status.BLOCKED, "No path to destination");
-            }
+        Vector step = target.toVector().subtract(here.toVector());
+        double distance = Math.sqrt(distSq);
+        step.multiply(Math.min(speed / 20.0, distance) / distance);
+        BoundingBox swept = mob.getBoundingBox().expandDirectional(step);
+        if (mob.getWorld().hasCollisionsIn(swept) || touchesLiquid(swept)) {
+            finish(Status.BLOCKED, "Flight path is obstructed");
+            return;
         }
+        if (step.getX() != 0 || step.getZ() != 0) {
+            mob.setRotation((float) Math.toDegrees(Math.atan2(-step.getX(), step.getZ())), 0);
+        }
+        mob.setVelocity(step);
     }
 
-    @Override
-    public void stop() {
-        mob.getPathfinder().stopPathfinding();
+    private boolean touchesLiquid(BoundingBox box) {
+        for (int x = (int) Math.floor(box.getMinX()); x <= Math.floor(box.getMaxX()); x++)
+            for (int y = (int) Math.floor(box.getMinY()); y <= Math.floor(box.getMaxY()); y++)
+                for (int z = (int) Math.floor(box.getMinZ()); z <= Math.floor(box.getMaxZ()); z++)
+                    if (mob.getWorld().getBlockAt(x, y, z).isLiquid()) return true;
+        return false;
     }
 
     private void finish(Status status, String reason) {
         pendingResult = new Result(commandId, status, reason);
         commandId = null;
         target = null;
-        mob.getPathfinder().stopPathfinding();
+        mob.setVelocity(new Vector());
     }
-
-    @Override public GoalKey<Mob> getKey() { return key; }
-    @Override public EnumSet<GoalType> getTypes() { return EnumSet.of(GoalType.MOVE); }
 }

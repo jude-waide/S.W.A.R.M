@@ -82,6 +82,36 @@ Minecraft plugin's responsibility. Full resilience, throughput, rendering, and
 end-to-end demo targets still require validation against the plugin and the
 deployment hardware.
 
+### Physical flight regression checks
+
+The plugin executes adjacent waypoints with bounded per-tick velocity, real block
+collision checks and gravity-free hover. Vanilla bee decisions are disabled
+without disabling flying-mob physics. Drones glow and carry the `drone_swarm`
+entity tag. `/spawn_drones <count> <range> <speed>` accepts speeds of 1–5 blocks
+per second. The backend still owns route planning; the plugin never teleports
+drones to complete a move.
+
+Flight needs a real Paper server, not a mocked pathfinder. Build the optional
+regression-test plugin with `.\gradlew.bat flightTestJar` in `MC_Plugin`, install
+the `*-flight-tests.jar` alongside the production plugin on a **test server**,
+and restart. In an empty air region, run these as an operator (or omit `/` in
+the server console):
+
+```text
+/test_drone_flight up 360 104 -128
+/test_drone_flight down 360 104 -128
+/test_drone_flight horizontal 360 104 -128
+/test_drone_flight blocked 360 104 -128
+/test_drone_flight ceiling 360 104 -128
+```
+
+Wait for each `FLIGHT_TEST ... PASS` before starting the next. Tests assert
+actual arrival within 0.06 blocks of the bee-sized cell centre, a full second
+of stationary hover, glow, an obstacle appearing after dispatch, and horizontal
+flight underneath a one-block ceiling. Each test removes its own bee and restores
+its temporary block, including on clean shutdown. Remove the test plugin and
+restart before normal use. These are separate from Gradle's JVM test task.
+
 ## Map camera
 
 The spatial telemetry view fills the window. Open the left-edge side tab for
