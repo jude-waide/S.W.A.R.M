@@ -117,29 +117,29 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
           <mesh ref={setNestMesh}>
             <cylinderGeometry args={[1.2, 1.2, 2.6, 6]} />
             <meshBasicMaterial transparent opacity={0} depthWrite={false} side={THREE.DoubleSide} />
-            <Edges color="#ff9a24" toneMapped={false} />
+            <Edges color="#ff9a24" toneMapped={false} transparent depthTest={false} depthWrite={false} renderOrder={1} />
           </mesh>
           <MapLabel position={[0, 2, 0]}>
             <span className="map-tag hive-tag">HIVE</span>
           </MapLabel>
           {[-3, -1.5, 0, 1.5, 3].map((height) => (
-            <lineLoop key={height} position={[0, height, 0]}>
+            <lineLoop key={height} position={[0, height, 0]} renderOrder={1}>
               <bufferGeometry>
                 <bufferAttribute attach="attributes-position" args={[towerRangeCircle, 3]} />
               </bufferGeometry>
-              <lineBasicMaterial color="#ff9a24" transparent opacity={0.45} toneMapped={false} />
+              <lineBasicMaterial color="#ff9a24" transparent opacity={0.45} toneMapped={false} depthTest={false} depthWrite={false} />
             </lineLoop>
           ))}
         </group>
       )}
       {reportedTarget && (
-        <mesh position={[
+        <mesh renderOrder={1} position={[
           reportedTarget.x - origin.x,
           reportedTarget.y - origin.y,
           reportedTarget.z - origin.z,
         ]}>
           <octahedronGeometry args={[0.8, 0]} />
-          <meshStandardMaterial color="#f07862" emissive="#a22e26" emissiveIntensity={0.8} />
+          <meshStandardMaterial color="#f07862" emissive="#a22e26" emissiveIntensity={0.8} transparent depthTest={false} depthWrite={false} />
         </mesh>
       )}
       {drones.map((drone) => {
@@ -244,7 +244,7 @@ function DroneMarker({
       }}>
         <boxGeometry args={[1, 0.6, 1.4]} />
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-        <Edges color="#ffe234" transparent opacity={opacity} toneMapped={false} />
+        <Edges color="#ffe234" transparent opacity={opacity} toneMapped={false} depthTest={false} depthWrite={false} renderOrder={1} />
       </mesh>
       {nestMesh && <MapLabel position={[0, 1.1, 0]} nestMesh={nestMesh}>
         <button
@@ -347,11 +347,11 @@ function Line({
 }) {
   const points = useMemo(() => [new THREE.Vector3(...start), new THREE.Vector3(...end)], [start, end]);
   return (
-    <line>
+    <lineSegments renderOrder={1}>
       <bufferGeometry>
         <bufferAttribute attach="attributes-position" args={[new Float32Array(points.flatMap((point) => point.toArray())), 3]} />
       </bufferGeometry>
-      <lineBasicMaterial color={color} transparent opacity={opacity} />
-    </line>
+      <lineBasicMaterial color={color} transparent opacity={opacity} depthTest={false} depthWrite={false} />
+    </lineSegments>
   );
 }
