@@ -1,0 +1,8 @@
+backend:
+  base-url: "http://127.0.0.1:5000"
+  plugin-key: ""
+mission:
+  bounds-min:
+    x: -64
+    y: 32
+    z: -64

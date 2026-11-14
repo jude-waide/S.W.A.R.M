@@ -14,5 +14,8 @@ commands:
     description: Spawns drones around the hive.
     usage: /<command> <n_drones> [drone_range] [speed]
   start_mission:
-    description: Begins a mission against the central server.
-    usage: /<command> <url>
+    description: Begins a mission using the configured backend.
+    usage: /<command>
+  reset_mission:
+    description: Resets the active backend mission and stops plugin telemetry.
+    usage: /<command>

@@ -7,50 +7,84 @@ import com.google.gson.JsonObject;
 import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.block.Block;
-import org.bukkit.entity.Entity;
 import org.bukkit.entity.Mob;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.util.AbstractMap;
 import java.util.HashMap;
+import java.util.Iterator;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 
 
 public class DroneManager {
-    private int next_id = 0;
-    private final AbstractMap<Integer, DroneAI> drones = new HashMap<>();
+    private int nextId;
+    private final Map<String, DroneAI> drones = new HashMap<>();
     private final int drone_range = 3;
     private final JavaPlugin plugin;
 
-    public DroneManager (JavaPlugin plugin) {
+    public DroneManager(JavaPlugin plugin) {
         this.plugin = plugin;
     }
 
     public void add_drone(Mob mob, double speed) {
         DroneAI drone = new DroneAI(plugin, mob, speed);
         drone.install();
-        drones.put(next_id, drone);
+        drones.put(Integer.toString(nextId++), drone);
     }
 
-    public JsonArray getInfo() {
+    public int size() {
+        return drones.size();
+    }
+
+    public boolean allDronesInBounds(MissionBounds bounds, World missionWorld) {
+        if (drones.isEmpty()) {
+            return false;
+        }
+        for (DroneAI drone : drones.values()) {
+            Mob mob = drone.getMob();
+            if (!mob.isValid() || !mob.getWorld().equals(missionWorld)) {
+                return false;
+            }
+            Location location = mob.getLocation();
+            if (!bounds.contains(location.getBlockX(), location.getBlockY(), location.getBlockZ())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public JsonArray getInfo(MissionBounds bounds, World missionWorld) {
 
         JsonArray dronesJson = new JsonArray();
 
-        for (Map.Entry<Integer, DroneAI> entry : drones.entrySet()) {
-            Entity drone = entry.getValue().getMob();
-            World world = drone.getWorld();
-            Location location = drone.getLocation();
+        for (Map.Entry<String, DroneAI> entry : drones.entrySet()) {
+            Mob drone = entry.getValue().getMob();
+            JsonObject droneJson = new JsonObject();
+            droneJson.addProperty("droneId", entry.getKey());
 
+            if (!drone.isValid() || !drone.getWorld().equals(missionWorld)) {
+                droneJson.addProperty("availability", "unavailable");
+                droneJson.addProperty("reason", "Drone entity is unavailable in the mission world");
+                dronesJson.add(droneJson);
+                continue;
+            }
+
+            Location location = drone.getLocation();
             int x = location.getBlockX();
             int y = location.getBlockY();
             int z = location.getBlockZ();
-
             JsonArray cells = new JsonArray();
-            for (int xb = x - drone_range; xb <= x + drone_range; xb++) {
-                for (int yb = y - drone_range; yb <= y + drone_range; yb++) {
-                    for (int zb = z - drone_range; zb <= z + drone_range; zb++) {
-                        Block block = world.getBlockAt(xb, yb, zb);
+            int maxX = bounds.minX() + MissionBounds.WIDTH - 1;
+            int maxY = bounds.minY() + MissionBounds.HEIGHT - 1;
+            int maxZ = bounds.minZ() + MissionBounds.DEPTH - 1;
+            for (int xb = Math.max(bounds.minX(), x - drone_range);
+                 xb <= Math.min(maxX, x + drone_range); xb++) {
+                for (int yb = Math.max(bounds.minY(), y - drone_range);
+                     yb <= Math.min(maxY, y + drone_range); yb++) {
+                    for (int zb = Math.max(bounds.minZ(), z - drone_range);
+                         zb <= Math.min(maxZ, z + drone_range); zb++) {
+                        Block block = missionWorld.getBlockAt(xb, yb, zb);
 
                         JsonObject cell = new JsonObject();
                         cell.addProperty("x", xb);
@@ -67,12 +101,19 @@ public class DroneManager {
             position.addProperty("y", location.getY());
             position.addProperty("z", location.getZ());
 
-            JsonObject droneJson = new JsonObject();
-            droneJson.addProperty("droneId", entry.getKey());
-            droneJson.addProperty("availability", drone.isValid() ? "available" : "unavailable");
+            droneJson.addProperty("availability", "available");
             droneJson.add("position", position);
             droneJson.add("cells", cells);
-            droneJson.add("commandResult", JsonNull.INSTANCE);
+            DroneAI.Result result = entry.getValue().getPendingResult();
+            if (result == null) {
+                droneJson.add("commandResult", JsonNull.INSTANCE);
+            } else {
+                JsonObject commandResult = new JsonObject();
+                commandResult.addProperty("commandId", result.commandId().toString());
+                commandResult.addProperty("status", result.status().name().toLowerCase(Locale.ROOT));
+                commandResult.addProperty("reason", result.reason());
+                droneJson.add("commandResult", commandResult);
+            }
 
             dronesJson.add(droneJson);
         }
@@ -80,30 +121,71 @@ public class DroneManager {
         return dronesJson;
     }
 
-    public void moveDrones(JsonArray commands) {
+    public void applyResponse(JsonObject response) {
+        JsonArray acknowledgements = response.getAsJsonArray("acknowledgedResults");
+        if (acknowledgements == null) {
+            throw new IllegalStateException("Backend response is missing acknowledgedResults");
+        }
+        for (JsonElement element : acknowledgements) {
+            JsonObject acknowledgement = element.getAsJsonObject();
+            String droneId = acknowledgement.get("droneId").getAsString();
+            DroneAI drone = drones.get(droneId);
+            if (drone != null) {
+                drone.acknowledge(UUID.fromString(acknowledgement.get("commandId").getAsString()));
+            } else {
+                plugin.getLogger().warning("Backend acknowledged a result for unknown drone " + droneId);
+            }
+        }
 
-        for (JsonElement command : commands.asList()) {
+        JsonArray commands = response.getAsJsonArray("commands");
+        if (commands == null) {
+            throw new IllegalStateException("Backend response is missing commands");
+        }
+        for (JsonElement command : commands) {
 
             JsonObject obj = command.getAsJsonObject();
-            int drone_id = obj.get("drone_id").getAsInt();
-            UUID command_id = UUID.fromString(obj.get("commandId").getAsString());
+            String droneId = obj.get("droneId").getAsString();
+            UUID commandId = UUID.fromString(obj.get("commandId").getAsString());
             String kind = obj.get("kind").getAsString();
 
-            if (drones.containsKey(drone_id)) {
-                DroneAI drone = drones.get(drone_id);
-
-                if (kind.equals("move")) {
-                    drone.issueMove(
-                            command_id,
-                            obj.get("x").getAsInt(),
-                            obj.get("y").getAsInt(),
-                            obj.get("z").getAsInt()
-                    );
-                }
+            DroneAI drone = drones.get(droneId);
+            if (drone == null) {
+                plugin.getLogger().warning("Backend issued a command for unknown drone " + droneId);
+                continue;
             }
-            else {
-                // Raise error
-                plugin.getSLF4JLogger().warn("Tried to move an unrecognised drone: id {}", drone_id);
+            if (!kind.equals("move")) {
+                plugin.getLogger().warning("Backend issued unsupported command kind " + kind);
+                continue;
+            }
+            JsonObject destination = obj.getAsJsonObject("destination");
+            if (destination == null) {
+                throw new IllegalStateException("Movement command is missing destination");
+            }
+            drone.issueMove(
+                    commandId,
+                    destination.get("x").getAsInt(),
+                    destination.get("y").getAsInt(),
+                    destination.get("z").getAsInt()
+            );
+        }
+    }
+
+    public void uninstallAll() {
+        for (DroneAI drone : drones.values()) {
+            if (drone.getMob().isValid()) {
+                drone.uninstall();
+            }
+        }
+    }
+
+    public void resetAll() {
+        Iterator<Map.Entry<String, DroneAI>> iterator = drones.entrySet().iterator();
+        while (iterator.hasNext()) {
+            DroneAI drone = iterator.next().getValue();
+            if (!drone.getMob().isValid()) {
+                iterator.remove();
+            } else {
+                drone.reset();
             }
         }
     }

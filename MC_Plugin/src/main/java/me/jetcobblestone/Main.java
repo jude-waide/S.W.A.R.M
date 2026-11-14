@@ -1,29 +1,37 @@
 package me.jetcobblestone;
 
 import org.bukkit.Location;
-import org.bukkit.entity.Bee;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.Listener;
-import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.plugin.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
-import java.util.ArrayList;
-import java.util.List;
-
 public final class Main extends JavaPlugin {
-
-
-    private Location hive;      // command centre (block cell), null until set
-    private Location target;    // target (block cell), null until set
-    private DroneManager droneManager = new DroneManager(this);
+    private Location hive;
+    private Location target;
+    private DroneManager droneManager;
     private SessionManager sessionManager;
-    private final List<DroneAI> drones = new ArrayList<>();
 
     @Override
     public void onEnable() {
+        saveDefaultConfig();
+        droneManager = new DroneManager(this);
         MissionCommands commands = new MissionCommands(this);
-        for (String name : new String[]{"set_hive", "set_target", "spawn_drones", "start_mission"}) {
-            getCommand(name).setExecutor(commands);
+        for (String name : new String[]{
+                "set_hive", "set_target", "spawn_drones", "start_mission", "reset_mission"}) {
+            PluginCommand command = getCommand(name);
+            if (command == null) {
+                throw new IllegalStateException("Command is missing from plugin.yml: " + name);
+            }
+            command.setExecutor(commands);
+        }
+    }
+
+    @Override
+    public void onDisable() {
+        if (sessionManager != null) {
+            sessionManager.stop();
+        }
+        if (droneManager != null) {
+            droneManager.uninstallAll();
         }
     }
 
@@ -39,5 +47,9 @@ public final class Main extends JavaPlugin {
 
     public SessionManager getSessionManager() {
         return sessionManager;
+    }
+
+    public void setSessionManager(SessionManager sessionManager) {
+        this.sessionManager = sessionManager;
     }
 }

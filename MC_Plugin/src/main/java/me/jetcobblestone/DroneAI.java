@@ -61,6 +61,7 @@ public class DroneAI implements Goal<Mob> {
 
     public void uninstall() {
         Bukkit.getMobGoals().removeGoal(mob, key);
+        mob.getPathfinder().stopPathfinding();
     }
 
     /**
@@ -102,6 +103,16 @@ public class DroneAI implements Goal<Mob> {
     }
 
     public boolean isBusy() { return commandId != null; }
+
+    public void reset() {
+        mob.getPathfinder().stopPathfinding();
+        commandId = null;
+        target = null;
+        pendingResult = null;
+        seenCommands.clear();
+        ticksSinceProgress = 0;
+        bestDistSq = 0;
+    }
 
     // ---- Paper Goal implementation ----
 

@@ -3,7 +3,6 @@ package me.jetcobblestone;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
-import org.bukkit.WorldType;
 import org.bukkit.block.Block;
 import org.bukkit.command.BlockCommandSender;
 import org.bukkit.command.Command;
@@ -11,9 +10,9 @@ import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Bee;
 import org.bukkit.entity.Entity;
-import org.bukkit.entity.Player;
 import org.jetbrains.annotations.NotNull;
 
+import java.net.URI;
 import java.util.concurrent.ThreadLocalRandom;
 
 public class MissionCommands implements CommandExecutor {
@@ -35,6 +34,7 @@ public class MissionCommands implements CommandExecutor {
             case "set_target" -> handleSetTarget(sender, args);
             case "spawn_drones" -> handleSpawnDrones(sender, args);
             case "start_mission" -> handleStartMission(sender, args);
+            case "reset_mission" -> handleResetMission(sender, args);
             default -> false;
         };
     }
@@ -43,6 +43,10 @@ public class MissionCommands implements CommandExecutor {
 
     private boolean handleSetHive(CommandSender sender, String[] args) {
         if (args.length != 3) return false;
+        if (isMissionActive()) {
+            sender.sendMessage("Stop the active mission before changing its hive.");
+            return true;
+        }
         Location loc = parseBlockLocation(sender, args, 0);
         if (loc == null) {
             sender.sendMessage("Invalid coordinates. Use numbers or ~ / ~n.");
@@ -58,6 +62,10 @@ public class MissionCommands implements CommandExecutor {
 
     private boolean handleSetTarget(CommandSender sender, String[] args) {
         if (args.length != 3) return false;
+        if (isMissionActive()) {
+            sender.sendMessage("Stop the active mission before changing its target.");
+            return true;
+        }
         Location loc = parseBlockLocation(sender, args, 0);
         if (loc == null) {
             sender.sendMessage("Invalid coordinates. Use numbers or ~ / ~n.");
@@ -73,6 +81,10 @@ public class MissionCommands implements CommandExecutor {
 
     private boolean handleSpawnDrones(CommandSender sender, String[] args) {
         if (args.length < 1 || args.length > 3) return false;
+        if (isMissionActive()) {
+            sender.sendMessage("Stop the active mission before spawning drones.");
+            return true;
+        }
 
         int nDrones;
         int range = 3; // default
@@ -100,8 +112,13 @@ public class MissionCommands implements CommandExecutor {
             sender.sendMessage("Set the hive first with /set_hive.");
             return true;
         }
+        MissionBounds bounds = configuredBounds();
+        if (!bounds.contains(hive.getBlockX(), hive.getBlockY(), hive.getBlockZ())) {
+            sender.sendMessage("Set the hive inside the configured mission bounds before spawning drones.");
+            return true;
+        }
 
-        int spawned = spawnDrones(hive, nDrones, range, speed);
+        int spawned = spawnDrones(hive, nDrones, range, speed, bounds);
         sender.sendMessage("Spawned " + spawned + "/" + nDrones + " drones around the hive.");
         if (spawned < nDrones) {
             sender.sendMessage("Not enough free space within range " + range + ".");
@@ -110,7 +127,7 @@ public class MissionCommands implements CommandExecutor {
     }
 
     /** Spawns bees in distinct free cells within +-range of the hive. Returns how many spawned. */
-    private int spawnDrones(Location hive, int count, int range, int speed) {
+    private int spawnDrones(Location hive, int count, int range, int speed, MissionBounds bounds) {
         World world = hive.getWorld();
         int hx = hive.getBlockX(), hy = hive.getBlockY(), hz = hive.getBlockZ();
 
@@ -122,6 +139,7 @@ public class MissionCommands implements CommandExecutor {
                     if (dx == 0 && dy == 0 && dz == 0) continue;
                     int y = hy + dy;
                     if (y < world.getMinHeight() || y >= world.getMaxHeight()) continue;
+                    if (!bounds.contains(hx + dx, y, hz + dz)) continue;
                     Block b = world.getBlockAt(hx + dx, y, hz + dz);
                     if (isFree(b)) candidates.add(b);
                 }
@@ -155,7 +173,11 @@ public class MissionCommands implements CommandExecutor {
     // ----------------------------------------------------------- start_mission
 
     private boolean handleStartMission(CommandSender sender, String[] args) {
-        if (args.length != 1) return false;
+        if (args.length != 0) return false;
+        if (isMissionActive()) {
+            sender.sendMessage("A mission is already running.");
+            return true;
+        }
 
         Location hive = plugin.getHive();
         if (hive == null) {
@@ -167,17 +189,81 @@ public class MissionCommands implements CommandExecutor {
             sender.sendMessage("Set the target first with /set_target.");
             return true;
         }
+        if (!hive.getWorld().equals(target.getWorld())) {
+            sender.sendMessage("The hive and target must be in the same world.");
+            return true;
+        }
+        if (plugin.getDroneManager().size() == 0) {
+            sender.sendMessage("Spawn at least one drone before starting the mission.");
+            return true;
+        }
+        if (!plugin.getDroneManager().allDronesInBounds(configuredBounds(), hive.getWorld())) {
+            sender.sendMessage("Every drone must be available in the hive's world and inside the mission bounds.");
+            return true;
+        }
 
-        new SessionManager(
-                plugin,
-                plugin.getDroneManager(),
-                hive,
-                target,
-                args[0],
-                plugin.get_key(),
+        String baseUrl = plugin.getConfig().getString("backend.base-url", "");
+        String pluginKey = plugin.getConfig().getString("backend.plugin-key", "");
+        baseUrl = baseUrl == null ? "" : baseUrl.trim();
+        pluginKey = pluginKey == null ? "" : pluginKey.trim();
+        if (baseUrl.isEmpty() || pluginKey.isEmpty()) {
+            sender.sendMessage("Set backend.base-url and backend.plugin-key in plugins/DroneSim/config.yml.");
+            return true;
+        }
 
-                );
+        MissionBounds bounds = configuredBounds();
+        if (!bounds.contains(hive.getBlockX(), hive.getBlockY(), hive.getBlockZ())
+                || !bounds.contains(target.getBlockX(), target.getBlockY(), target.getBlockZ())) {
+            sender.sendMessage("Hive and target must be inside the configured mission bounds.");
+            return true;
+        }
 
+        try {
+            URI backendUri = URI.create(baseUrl);
+            if (!("http".equalsIgnoreCase(backendUri.getScheme())
+                    || "https".equalsIgnoreCase(backendUri.getScheme()))
+                    || backendUri.getHost() == null) {
+                sender.sendMessage("backend.base-url must be an absolute HTTP or HTTPS URL.");
+                return true;
+            }
+        } catch (IllegalArgumentException exception) {
+            sender.sendMessage("backend.base-url must be an absolute HTTP or HTTPS URL.");
+            return true;
+        }
+
+        SessionManager session = new SessionManager(plugin, plugin.getDroneManager(), hive, target, bounds,
+                baseUrl, pluginKey);
+        plugin.setSessionManager(session);
+        session.start();
+        sender.sendMessage("Starting mission. Check the server log for backend acceptance.");
+
+        return true;
+    }
+
+    private boolean isMissionActive() {
+        SessionManager session = plugin.getSessionManager();
+        return session != null && session.isActive();
+    }
+
+    private MissionBounds configuredBounds() {
+        return new MissionBounds(
+                plugin.getConfig().getInt("mission.bounds-min.x", -64),
+                plugin.getConfig().getInt("mission.bounds-min.y", 32),
+                plugin.getConfig().getInt("mission.bounds-min.z", -64));
+    }
+
+    private boolean handleResetMission(CommandSender sender, String[] args) {
+        if (args.length != 0) return false;
+        SessionManager session = plugin.getSessionManager();
+        if (session == null) {
+            sender.sendMessage("No mission session is available to reset. Restart the backend if it still has an old mission.");
+            return true;
+        }
+        if (!session.resetMission()) {
+            sender.sendMessage("Reset could not start; wait for mission initialisation or a pending reset to finish.");
+            return true;
+        }
+        sender.sendMessage("Reset requested. Check the server log for backend confirmation.");
         return true;
     }
 
