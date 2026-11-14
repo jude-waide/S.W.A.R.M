@@ -129,7 +129,8 @@ public sealed record DroneDebug(
     string? RendezvousTargetId,
     IReadOnlyList<string> ConnectedPeers,
     IReadOnlyList<DebugCell> Cells,
-    BlockPoint? KnownTarget);
+    BlockPoint? KnownTarget,
+    int FrontierMovesSinceUpload);
 
 public sealed record DebugCell(int X, int Y, int Z, bool Solid, long SourceTick);
 

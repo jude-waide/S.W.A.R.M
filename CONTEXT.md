@@ -287,6 +287,12 @@ Mission initialisation and reset are controlled through the authenticated plugin
 - After 24 completed frontier advances without a direct tower upload, carry
   discoveries back to the tower, then resume exploration. Known-route transit
   does not count towards this budget. Do not expose unrelayed terrain globally.
+- A new direct peer encounter exchanges knowledge, then resets the exploring
+  scout with more of its 24 frontier moves remaining. The peer nearer its next
+  upload keeps its schedule; equal counters preserve the lower ordinal unit
+  ID's schedule. Decide simultaneous encounters from pre-reset counters.
+  Continuous contact is not another encounter. Do not cancel an upload trip
+  already underway or override target reporting, recall, rendezvous or rescue.
 - Terrain-known and target-searched coverage are separate. A cell counts as
   searched only when in the drone's sensing cube with unobstructed line of sight.
   Occupancy reported behind an obstruction does not clear that cell for search.

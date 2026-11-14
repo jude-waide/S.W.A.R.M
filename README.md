@@ -241,6 +241,14 @@ exploring. Transit across already-searched terrain does not consume that budget.
 The dashboard labels this behaviour `RETURNING TO UPLOAD`. The tower map still
 contains only legitimately received observations, never hidden global terrain.
 
+When two scouts establish a new direct link and exchange knowledge, the one
+with more search moves remaining before its next upload resets its counter.
+The nearer-to-return scout keeps its schedule; equal counters keep the lower
+ordinal unit ID on schedule. A continuous link does not repeatedly reset the
+budget. Upload trips already underway, target reporting, recall and rescue
+behavior take priority. Selected-drone debug data includes
+`frontierMovesSinceUpload` so this budget can be inspected.
+
 ## Run the ground-mapping demo
 
 With the backend running and the same `PLUGIN_KEY` set in a second shell:

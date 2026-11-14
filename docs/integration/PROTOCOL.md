@@ -233,7 +233,8 @@ clears old points, markers, and selection.
 - Public overview: tower-known terrain, connected-drone overlay, last-reported
   disconnected markers, mission milestones, and connection status.
 - Selected-drone subscription: that drone's live cube, current position,
-  behaviour, contacts, and report age, clearly labelled debug data.
+  behaviour, contacts, report age, and integer `frontierMovesSinceUpload`
+  search-budget counter, clearly labelled debug data.
 - The snapshot's nullable `overallTarget` contains the configured target for
   debug Overall View only; it is null without a mission. `targetReported` and
   `reportedTarget` retain their legitimate-report semantics. Reveal the target

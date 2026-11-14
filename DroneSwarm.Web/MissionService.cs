@@ -268,7 +268,8 @@ public sealed class MissionService
                     .OrderBy(pair => pair.Key.X).ThenBy(pair => pair.Key.Y).ThenBy(pair => pair.Key.Z)
                     .Select(pair => new DebugCell(pair.Key.X, pair.Key.Y, pair.Key.Z, pair.Value.Solid, pair.Value.SourceTick))
                     .ToArray(),
-                drone.TargetKnown ? mission.Target.ToPoint() : null);
+                drone.TargetKnown ? mission.Target.ToPoint() : null,
+                drone.FrontierMovesSinceUpload);
         }
     }
 
@@ -501,6 +502,10 @@ public sealed class MissionService
         var oldTowerTarget = mission.TargetReported;
         var oldTowerRecall = mission.RecallIssued;
         var oldTowerAssignments = new Dictionary<string, RecoveryAssignment>(mission.TowerAssignments, StringComparer.Ordinal);
+        var oldPeers = mission.Drones.ToDictionary(
+            pair => pair.Key,
+            pair => new HashSet<string>(pair.Value.ConnectedPeers, StringComparer.Ordinal),
+            StringComparer.Ordinal);
 
         UpdateLinks(mission);
         foreach (var drone in mission.Drones.Values)
@@ -580,6 +585,8 @@ public sealed class MissionService
             }
         }
 
+        DeferUploadsOnEncounters(mission, oldPeers);
+
         if (mission.TargetReported && !mission.RecallIssued)
             mission.RecallIssued = true;
         if (mission.RecallIssued)
@@ -606,6 +613,26 @@ public sealed class MissionService
 
         UpdateRendezvous(mission);
         PlanMoves(mission);
+    }
+
+    private static void DeferUploadsOnEncounters(Mission mission, Dictionary<string, HashSet<string>> oldPeers)
+    {
+        var eligible = mission.Drones.Values.Where(drone =>
+            !drone.Faulted && drone.Position is not null && !drone.TargetKnown && !drone.RecallKnown &&
+            drone.RescueAssignment is null && drone.RendezvousPeerId is null && !drone.ReturnAfterRendezvous)
+            .ToDictionary(drone => drone.Id, drone => drone.FrontierMovesSinceUpload, StringComparer.Ordinal);
+        foreach (var (id, moves) in eligible)
+        foreach (var peerId in mission.Drones[id].ConnectedPeers)
+        {
+            if (StringComparer.Ordinal.Compare(id, peerId) >= 0 || oldPeers[id].Contains(peerId) ||
+                !eligible.TryGetValue(peerId, out var peerMoves))
+                continue;
+            // Use pre-reset counters for simultaneous encounters; the lower ID keeps an equal schedule.
+            var exploring = mission.Drones[moves < peerMoves ? id : peerId];
+            if (exploring.ReturningToUpload || eligible[exploring.Id] >= FrontierMovesBeforeUpload)
+                continue;
+            exploring.FrontierMovesSinceUpload = 0;
+        }
     }
 
     private static void RebaseBehaviorTimers(Mission mission, long elapsedTicks)

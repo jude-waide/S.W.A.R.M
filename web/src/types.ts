@@ -50,4 +50,5 @@ export type DroneDebug = {
   connectedPeers: string[];
   cells: { x: number; y: number; z: number; solid: boolean; sourceTick: number }[];
   knownTarget: Point | null;
+  frontierMovesSinceUpload: number;
 };

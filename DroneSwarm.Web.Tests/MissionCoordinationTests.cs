@@ -21,6 +21,80 @@ public sealed class MissionCoordinationTests
     }
 
     [Fact]
+    public void NewPeerContactDefersOnlyTheLaterUploadAndDoesNotKeepResettingWhileLinked()
+    {
+        var simulation = new EncounterSimulation("A", "B");
+        simulation.Advance("B", 6);
+        simulation.Advance("A", 2);
+        simulation.Meet("B", "A");
+
+        Assert.Equal(0, simulation.Debug("A").FrontierMovesSinceUpload);
+        Assert.Equal(6, simulation.Debug("B").FrontierMovesSinceUpload);
+        simulation.Step("A");
+        Assert.Contains("B", simulation.Debug("A").ConnectedPeers);
+        Assert.Equal(1, simulation.Debug("A").FrontierMovesSinceUpload);
+
+        var near = simulation.Positions["B"];
+        simulation.Positions["B"] = new() { X = near.X, Y = near.Y, Z = near.Z + 20 };
+        simulation.Step();
+        Assert.DoesNotContain("B", simulation.Debug("A").ConnectedPeers);
+        simulation.Meet("B", "A");
+        Assert.Equal(0, simulation.Debug("A").FrontierMovesSinceUpload);
+        Assert.Equal(6, simulation.Debug("B").FrontierMovesSinceUpload);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SimultaneousEqualCounterEncountersPreserveOneUploaderRegardlessOfRosterOrder(bool reverseRoster)
+    {
+        var simulation = reverseRoster
+            ? new EncounterSimulation("C", "B", "A")
+            : new EncounterSimulation("A", "B", "C");
+        foreach (var id in new[] { "A", "B", "C" }) simulation.Advance(id, 3);
+        var anchor = simulation.Positions["A"];
+        simulation.Positions["B"] = new() { X = anchor.X, Y = anchor.Y, Z = anchor.Z + 1 };
+        simulation.Positions["C"] = new() { X = anchor.X, Y = anchor.Y, Z = anchor.Z + 2 };
+        simulation.Step();
+
+        Assert.Equal(3, simulation.Debug("A").FrontierMovesSinceUpload);
+        Assert.Equal(0, simulation.Debug("B").FrontierMovesSinceUpload);
+        Assert.Equal(0, simulation.Debug("C").FrontierMovesSinceUpload);
+    }
+
+    [Fact]
+    public void AnEncounterKeepsAnAlreadyReturningUploaderOnSchedule()
+    {
+        var simulation = new EncounterSimulation("A", "B");
+        simulation.Advance("B", 24);
+        simulation.Positions["B"] = new() { X = 4.5, Y = 12.5, Z = 0.5 };
+        simulation.Step();
+        simulation.Advance("A", 6);
+        Assert.Equal("returningToUpload", simulation.Debug("B").Behavior);
+        simulation.Meet("B", "A");
+
+        Assert.Equal(0, simulation.Debug("A").FrontierMovesSinceUpload);
+        Assert.Equal(24, simulation.Debug("B").FrontierMovesSinceUpload);
+        Assert.Equal("returningToUpload", simulation.Debug("B").Behavior);
+    }
+
+    [Fact]
+    public void TargetKnowledgeStillTakesPriorityOverDeferringAnUpload()
+    {
+        var simulation = new EncounterSimulation("A", "B");
+        simulation.Advance("B", 6);
+        simulation.Advance("A", 2);
+        simulation.Positions["B"] = new() { X = 58.5, Y = 12.5, Z = 58.5 };
+        simulation.Step();
+        Assert.NotNull(simulation.Debug("B").KnownTarget);
+        simulation.Meet("B", "A");
+
+        Assert.NotNull(simulation.Debug("A").KnownTarget);
+        Assert.Equal(2, simulation.Debug("A").FrontierMovesSinceUpload);
+        Assert.Equal(6, simulation.Debug("B").FrontierMovesSinceUpload);
+    }
+
+    [Fact]
     public void ScoutsStartingInTheSameCellReceiveDistinctDestinations()
     {
         var service = new MissionService();
@@ -280,6 +354,62 @@ public sealed class MissionCoordinationTests
         var debug = service.GetDroneDebug("B");
         Assert.Null(debug.RendezvousTargetId);
         Assert.Equal(1, debug.LastContactAgeSeconds);
+    }
+
+    private sealed class EncounterSimulation
+    {
+        private readonly MissionService _service = new();
+        private readonly string _missionId = Guid.NewGuid().ToString();
+        private Dictionary<string, MovementCommand> _pending = [];
+        private long _sequence;
+        public Dictionary<string, DronePosition> Positions { get; } = [];
+
+        public EncounterSimulation(params string[] ids)
+        {
+            Initialize(_service, _missionId, new() { X = 60, Y = 12, Z = 60 }, ids);
+            for (var index = 0; index < ids.Length; index++)
+                Positions[ids[index]] = new() { X = 20.5, Y = 12.5, Z = -29.5 + index * 60.0 / (ids.Length - 1) };
+            Step();
+        }
+
+        public DroneDebug Debug(string id) => _service.GetDroneDebug(id);
+
+        public void Advance(string id, int moves)
+        {
+            for (var step = 0; Debug(id).FrontierMovesSinceUpload < moves && step < 60; step++) Step(id);
+            Assert.Equal(moves, Debug(id).FrontierMovesSinceUpload);
+        }
+
+        public void Meet(string movingId, string anchorId)
+        {
+            var anchor = Positions[anchorId];
+            Positions[movingId] = new() { X = anchor.X, Y = anchor.Y, Z = anchor.Z + 1 };
+            Step();
+            Assert.Contains(movingId, Debug(anchorId).ConnectedPeers);
+        }
+
+        public void Step(params string[] complete)
+        {
+            var telemetry = new List<DroneTelemetry>();
+            foreach (var (id, original) in Positions.ToArray())
+            {
+                var position = original;
+                CommandResult? result = null;
+                if (complete.Contains(id) && _pending.TryGetValue(id, out var command))
+                {
+                    var destination = command.Destination;
+                    position = new() { X = destination.X + 0.5, Y = destination.Y + 0.5, Z = destination.Z + 0.5 };
+                    Positions[id] = position;
+                    result = new() { CommandId = command.CommandId, Status = "completed" };
+                }
+                var drone = Drone(id, position, CellIsSolid);
+                drone.CommandResult = result;
+                telemetry.Add(drone);
+            }
+            _sequence++;
+            var response = Accept(_service, _missionId, _sequence, _sequence * 10, [.. telemetry]);
+            _pending = response.Commands.ToDictionary(command => command.DroneId);
+        }
     }
 
     private static void Initialize(MissionService service, string missionId, BlockPoint target, string[] droneIds)

@@ -64,6 +64,7 @@ const debug: DroneDebug = {
     { x: 30, y: 21, z: -12, solid: false, sourceTick: 20 },
   ],
   knownTarget: null,
+  frontierMovesSinceUpload: 0,
 };
 
 test("overall view shows the true target before discovery without revealing it in hive or scout views", () => {
