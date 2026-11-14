@@ -4,6 +4,9 @@ The web application is an ASP.NET Core service with a React/Three.js dashboard.
 It accepts the version 1 Minecraft plugin protocol, keeps one active mission in
 memory, and serves the public dashboard and SignalR updates from the same app.
 
+For a single-instance Linux Azure App Service deployment, see the
+[Azure deployment guide](docs/AZURE.md).
+
 ## Run locally
 
 1. Set a plugin key in the shell; do not commit it:
