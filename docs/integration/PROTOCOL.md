@@ -93,7 +93,7 @@ Fresh observations begin at sequence 1.
   "gameTick": 12010,
   "drones": [
     {
-      "droneId": "drone-1",
+      "droneId": 0,
       "availability": "available",
       "position": { "x": 1.5, "y": 64.5, "z": 0.5 },
       "cells": [
@@ -165,7 +165,7 @@ show it again, but does not clear a fault or authorise movement before reset.
   "acknowledgedResults": [],
   "commands": [
     {
-      "droneId": "drone-1",
+      "droneId": 0,
       "commandId": "32b33563-6b18-43ae-b1ed-d41b087d465a",
       "kind": "move",
       "destination": { "x": 2, "y": 64, "z": 0 }
