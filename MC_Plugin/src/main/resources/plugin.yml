@@ -1,0 +1,18 @@
+name: DroneSim
+version: 1.0
+main: me.jetcobblestone.Main
+api-version: '1.21'
+
+commands:
+  set_hive:
+    description: Sets the command centre (tower) location.
+    usage: /<command> <x> <y> <z>
+  set_target:
+    description: Sets the target location.
+    usage: /<command> <x> <y> <z>
+  spawn_drones:
+    description: Spawns drones around the hive.
+    usage: /<command> <n_drones> [drone_range] [speed]
+  start_mission:
+    description: Begins a mission against the central server.
+    usage: /<command> <url>
