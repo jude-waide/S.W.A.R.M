@@ -1,7 +1,7 @@
 package me.jetcobblestone;
 
 import org.bukkit.Location;
-import org.bukkit.plugin.PluginCommand;
+import org.bukkit.command.PluginCommand;
 import org.bukkit.plugin.java.JavaPlugin;
 
 public final class Main extends JavaPlugin {
