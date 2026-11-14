@@ -79,8 +79,12 @@ The empty array illustrates structure only: a real mission requires at least one
 drone with a complete available observation as defined below.
 
 Bounds are fixed at 128x64x128 blocks. Minimum is inclusive; maximum is exclusive.
-Target coordinates are private simulation ground truth and must never be
-copied into a public snapshot or drone planner input.
+The Paper plugin derives the minimum from the hive minus (64, 32, 64), shifting
+the vertical range inward at world height limits. Bounds remain fixed during
+the mission; moving the hive requires a reset and new initialisation.
+Target coordinates are simulation ground truth and must never be copied into
+drone planner knowledge. The public debug Overall View may display them through
+the separate `overallTarget` snapshot field; this is not a detection or report.
 
 Initialisation returns an accepted-frame response with no movement commands.
 Fresh observations begin at sequence 1.
@@ -230,8 +234,10 @@ clears old points, markers, and selection.
   disconnected markers, mission milestones, and connection status.
 - Selected-drone subscription: that drone's live cube, current position,
   behaviour, contacts, and report age, clearly labelled debug data.
-- Target ground truth is excluded. Reveal the target in a selected drone's
-  knowledge only after legitimate detection/receipt, and on the tower map only
-  after a legitimate report reaches the tower.
+- The snapshot's nullable `overallTarget` contains the configured target for
+  debug Overall View only; it is null without a mission. `targetReported` and
+  `reportedTarget` retain their legitimate-report semantics. Reveal the target
+  in a selected drone's knowledge only after legitimate detection/receipt, and
+  on the Hive View only after a legitimate report reaches the tower.
 - Inspecting or subscribing must never change simulated knowledge.
 - Frozen telemetry means frozen markers, not extrapolated live motion.

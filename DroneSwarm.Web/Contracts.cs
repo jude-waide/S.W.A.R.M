@@ -97,7 +97,8 @@ public sealed record PublicSnapshot(
     int RecoveredCount,
     IReadOnlyList<string> MissingDroneIds,
     long? GameTick,
-    IReadOnlyList<PublicCell> LiveTerrain);
+    IReadOnlyList<PublicCell> LiveTerrain,
+    BlockPoint? OverallTarget);
 
 public sealed record PublicCell(int X, int Y, int Z, long SourceTick);
 public sealed record PublicDrone(

@@ -8,11 +8,21 @@
 - Server, Java runtime, credentials, logs and worlds stay **outside Git** in
   `C:\repos\Durhack\DroneSwarm.LocalTest`.
 - Active normal-terrain world: `terrain-world`. The old flat `world` is preserved.
-- Plugin bounds: X `288..415`, Y `48..111`, Z `-192..-65`.
+- Hive-centered bounds: X `288..415`, Y `49..112`, Z `-192..-65`.
 - Hive: `352 81 -128`. Search target: `392 76 -98`.
 
 The commands below are Minecraft chat commands. In the server console or RCON,
 omit the leading `/`.
+
+The commands use Minecraft's argument prompts and Tab completion. Hive/target
+positions accept absolute block coordinates, `~` relative coordinates and `^`
+local coordinates. `spawn_drones` prompts for `n_drones`, optional `drone_range`
+and optional `speed`, with valid numeric suggestions.
+
+`set_hive` moves the 128x64x128 mission bounds with the hive and prints their
+inclusive limits. The vertical range stays inside the world's build height.
+There is no bounds configuration to edit. After moving the hive, set a target
+inside the new area and reposition the drones before starting.
 
 ## First search after starting Paper
 
@@ -75,7 +85,9 @@ them before the setup teleport and next start.
   retain faded last-reported markers.
 - **SCOUT VIEW**: choose a unit in the roster; see only that unit's accumulated
   terrain, own position and known target. No global-map fallback.
-- **OVERALL VIEW**: debug overview of all observed terrain and live unit positions.
+- **OVERALL VIEW**: debug overview of all observed terrain, live unit positions,
+  and the actual target, including before discovery. This does not tell scouts
+  or the hive where the target is.
 - **HEIGHT FILTER**: reveal lower levels or cut away upper terrain.
 - The white terrain outline now includes vertical corner connections.
 - Nearer known terrain hides obstructed white outlines.

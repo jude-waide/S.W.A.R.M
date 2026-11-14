@@ -21,7 +21,7 @@ export function getMapData(
     return {
       terrain: viewMode === "overall" ? snapshot.liveTerrain : snapshot.terrain,
       drones: getMapDrones(snapshot.drones, viewMode),
-      reportedTarget: snapshot.reportedTarget,
+      reportedTarget: viewMode === "overall" ? snapshot.overallTarget : snapshot.reportedTarget,
     };
   }
   const scout = snapshot.drones.find((drone) => drone.id === selectedId);

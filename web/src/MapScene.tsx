@@ -140,6 +140,9 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
         ]}>
           <octahedronGeometry args={[0.8, 0]} />
           <meshStandardMaterial color="#f07862" emissive="#a22e26" emissiveIntensity={0.8} transparent depthTest={false} depthWrite={false} />
+          <MapLabel position={[0, 1.5, 0]}>
+            <span className="map-tag">TARGET</span>
+          </MapLabel>
         </mesh>
       )}
       {drones.map((drone) => {

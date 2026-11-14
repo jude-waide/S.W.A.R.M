@@ -48,6 +48,7 @@ const snapshot: Snapshot = {
   protocolVersion: 1, missionId: "mission-a", version: 1, phase: "searching",
   connectionState: "connected", worldId: "test", tower: { x: 0, y: 20, z: 0 },
   targetReported: true, reportedTarget: { x: 99, y: 20, z: 99 },
+  overallTarget: { x: 99, y: 20, z: 99 },
   terrain: [{ x: 90, y: 19, z: 90, sourceTick: 20 }],
   liveTerrain: [{ x: 91, y: 19, z: 91, sourceTick: 20 }],
   drones: [scout, { ...scout, id: "SCOUT-02" }],
@@ -64,6 +65,15 @@ const debug: DroneDebug = {
   ],
   knownTarget: null,
 };
+
+test("overall view shows the true target before discovery without revealing it in hive or scout views", () => {
+  const searching = { ...snapshot, targetReported: false, reportedTarget: null };
+  assert.deepEqual(getMapData(searching, "overall", scout.id, debug).reportedTarget, snapshot.overallTarget);
+  assert.equal(getMapData(searching, "hive", scout.id, debug).reportedTarget, null);
+  assert.equal(getMapData(searching, "scout", scout.id, debug).reportedTarget, null);
+  assert.equal(searching.targetReported, false);
+  assert.equal(debug.knownTarget, null);
+});
 
 test("scout view shows only the selected unit's solid knowledge, own position and known target", () => {
   const data = getMapData(snapshot, "scout", scout.id, debug);

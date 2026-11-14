@@ -27,9 +27,10 @@ Do not simply stop all commands when the tower receives the report.
 The target must be discovered through sensing, not supplied as prior knowledge
 to the drones. The backend receives target coordinates as hidden mission ground
 truth, isolated from every drone's decision-making and shared knowledge.
-The in-memory web backend keeps ground truth private and only exposes target
-coordinates to a drone after detection or to the tower after a legitimate
-report.
+The in-memory web backend only exposes target coordinates to a drone after
+detection or to the tower after a legitimate report. The debug Overall View
+also shows the actual target through a separate `overallTarget` snapshot field;
+this never changes drone knowledge, tower knowledge, or mission milestones.
 
 Tower and target coordinates stay fixed during a mission. Moving either requires
 a fresh mission; moving-target tracking is outside this version.
@@ -78,6 +79,9 @@ a fresh mission; moving-target tracking is outside this version.
 - The exploration volume is 128x64x128 blocks (X by Y by Z).
 - Minecraft supplies the integer minimum X/Y/Z at initialisation. Minimum
   bounds are inclusive and maximum bounds exclusive.
+- The Paper plugin centers this box on the configured hive, shifting its
+  vertical extent inward at world height limits. Moving the hive moves the box
+  for the next mission; no absolute bounds configuration is required.
 - Reject initialisation if tower, target, or initial drone locations are outside
   the box. Backend-planned waypoints must remain inside it.
 - Bounds and dimensions stay fixed for the duration of a mission.

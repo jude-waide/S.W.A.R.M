@@ -204,7 +204,7 @@ public sealed class MissionService
         lock (_gate)
         {
             if (_mission is null)
-                return new(1, null, 0, "awaitingMission", "disconnected", null, null, false, null, [], [], 0, [], null, []);
+                return new(1, null, 0, "awaitingMission", "disconnected", null, null, false, null, [], [], 0, [], null, [], null);
 
             var mission = _mission;
             var connected = IsFresh(mission);
@@ -234,7 +234,8 @@ public sealed class MissionService
                     .Order(StringComparer.Ordinal)
                     .ToArray(),
                 mission.LastGameTick,
-                ToPublicTerrain(liveCells));
+                ToPublicTerrain(liveCells),
+                mission.Target.ToPoint());
         }
     }
 

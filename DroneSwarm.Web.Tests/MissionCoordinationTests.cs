@@ -3,6 +3,24 @@ namespace DroneSwarm.Web.Tests;
 public sealed class MissionCoordinationTests
 {
     [Fact]
+    public void OverallTargetIsVisibleBeforeDiscoveryWithoutChangingHiveOrScoutKnowledge()
+    {
+        var service = new MissionService();
+        var missionId = Guid.NewGuid().ToString();
+        var target = new BlockPoint { X = 60, Y = 12, Z = 60 };
+        Initialize(service, missionId, target, ["A"]);
+
+        var snapshot = service.GetSnapshot();
+        Assert.Equal(target, snapshot.OverallTarget);
+        Assert.False(snapshot.TargetReported);
+        Assert.Null(snapshot.ReportedTarget);
+        Assert.Null(service.GetDroneDebug("A").KnownTarget);
+
+        service.Reset(missionId);
+        Assert.Null(service.GetSnapshot().OverallTarget);
+    }
+
+    [Fact]
     public void ScoutsStartingInTheSameCellReceiveDistinctDestinations()
     {
         var service = new MissionService();

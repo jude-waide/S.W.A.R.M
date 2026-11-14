@@ -27,6 +27,7 @@ export type Snapshot = {
   tower: Point | null;
   targetReported: boolean;
   reportedTarget: Point | null;
+  overallTarget: Point | null;
   terrain: { x: number; y: number; z: number; sourceTick: number }[];
   liveTerrain: { x: number; y: number; z: number; sourceTick: number }[];
   drones: PublicDrone[];

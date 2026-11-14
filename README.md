@@ -43,8 +43,10 @@ Copy `MC_Plugin\build\libs\MC_Plugin-1.0-SNAPSHOT.jar` into the Paper server's
 `plugins` directory and start the server once. Edit
 `plugins\DroneSim\config.yml`; set `backend.plugin-key` to the same local-only
 key used by ASP.NET Core. The default backend URL is
-`http://127.0.0.1:5000`. The default mission bounds are X/Z `-64` through `63`
-and Y `32` through `95`; adjust the minimums if the demo area is elsewhere.
+`http://127.0.0.1:5000`. `set_hive` automatically centers a 128x64x128 mission
+area on the hive: minimum X/Z are hive X/Z minus 64 and minimum Y is hive Y
+minus 32, shifted inward if necessary to stay within the world's height.
+The old `mission.bounds-min` configuration is no longer used.
 
 On the same computer, start the built web app on port 5000:
 
@@ -54,8 +56,7 @@ cd DroneSwarm.Web
 dotnet run --urls http://127.0.0.1:5000
 ```
 
-Join the Paper world and run the following in a clear, flat area within the
-configured bounds:
+Join the Paper world, choose a clear hive cell, and run:
 
 ```text
 /set_hive 0 64 0
@@ -63,6 +64,15 @@ configured bounds:
 /spawn_drones 5 2 2
 /start_mission
 ```
+
+These are native Minecraft commands: the chat prompt shows the expected
+arguments, coordinate arguments offer normal coordinate completion (including
+`~` relative and `^` local coordinates), and Tab suggests valid drone counts,
+ranges and speeds. `spawn_drones` accepts 1-64 units, optional spawn range 1-3
+(default 3), and speed 1-5 blocks/s (default 2). Set the hive before the target.
+Moving the hive moves the bounds; the command prints the new inclusive limits
+and warns if the old target now lies outside them. Reset before moving mission
+landmarks, and reposition out-of-bounds drones before starting again.
 
 Open `http://127.0.0.1:5000` for the dashboard. `/reset_mission` explicitly
 resets the backend mission and makes the current drones available for another
@@ -131,6 +141,10 @@ flight underneath a one-block ceiling. Each test removes its own bee and restore
 its temporary block, including on clean shutdown. Remove the test plugin and
 restart before normal use. These are separate from Gradle's JVM test task.
 
+The same optional companion exposes `/test_mission_setup`, a read-only check
+of the live native command tree's count/range/speed completion and prefix
+filtering. It reports `SETUP_TEST completion PASS` without spawning any units.
+
 ## Map camera
 
 The spatial telemetry view fills the window. Open the left-edge side tab for
@@ -155,8 +169,9 @@ drone-local. The camera keeps its viewing angle and zoom while tracking; orbit
 and zoom remain available, but panning is disabled during follow mode. Select
 **HIVE VIEW** to stop following and recenter on the hive, or **OVERALL VIEW** to
 frame all height-visible discovered terrain, live positions of all scouts (including
-isolated scouts), and any reported target. Overall view uses plugin telemetry
-for markers and follow mode without publishing it into the hive's knowledge.
+isolated scouts), and the actual target even before discovery. Overall view uses
+plugin telemetry for markers and follow mode without publishing it into the
+hive's knowledge.
 Clicking a scout in overall view jumps to a close follow view while retaining
 the camera's viewing direction. Clicking it again refocuses; subsequent live
 updates preserve manual orbit and zoom.

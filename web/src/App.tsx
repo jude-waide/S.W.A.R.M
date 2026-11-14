@@ -15,6 +15,7 @@ const emptySnapshot: Snapshot = {
   tower: null,
   targetReported: false,
   reportedTarget: null,
+  overallTarget: null,
   terrain: [],
   liveTerrain: [],
   drones: [],
