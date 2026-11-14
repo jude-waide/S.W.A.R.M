@@ -69,6 +69,9 @@ resets the backend mission and makes the current drones available for another
 run. If the plugin was restarted and no longer has the mission ID, restart the
 web app to clear its in-memory mission before starting another one.
 
+For the prepared normal-terrain world, exact start/reset commands, and the
+local server startup script, see the [local test notebook](docs/integration/LOCAL_TEST_NOTEBOOK.md).
+
 For two computers, bind the web app to its LAN interface and set the plugin URL
 to that host's address; do this only on a trusted private hotspot with a
 short-lived key, never over venue Wi-Fi or public HTTP.
@@ -126,34 +129,34 @@ with an orange fill and minimum/maximum height markers. The header uses a
 seven-cell honeycomb mark; hovering over it shows the backend's online/offline
 status.
 
-In **NEST VIEW**, select a drone in the roster or on the map to follow its current
+In **HIVE VIEW**, select a drone in the roster or on the map to follow its current
 tower-known position. Isolated drones remain at their last tower-reported position and are
 shown faded; selecting one does not reveal or follow its disconnected live
 position on the tower map. The selected-drone debug panel remains live and
 drone-local. The camera keeps its viewing angle and zoom while tracking; orbit
 and zoom remain available, but panning is disabled during follow mode. Select
-**NEST VIEW** to stop following and recenter on the nest, or **OVERALL VIEW** to
+**HIVE VIEW** to stop following and recenter on the hive, or **OVERALL VIEW** to
 frame all height-visible discovered terrain, live positions of all scouts (including
 isolated scouts), and any reported target. Overall view uses plugin telemetry
-for markers and follow mode without publishing it into the nest's knowledge.
+for markers and follow mode without publishing it into the hive's knowledge.
 Clicking a scout in overall view jumps to a close follow view while retaining
 the camera's viewing direction. Clicking it again refocuses; subsequent live
 updates preserve manual orbit and zoom.
 Unavailable or stale telemetry remains marked as last reported; faulted scouts
 remain marked as faulted. Overall terrain updates with discoveries from every
-scout immediately, including isolated scouts; nest view keeps those discoveries
+scout immediately, including isolated scouts; hive view keeps those discoveries
 hidden until they are reported through the communication network. Newer air
 observations remove older solid cells in the observer view without modifying
-nest knowledge or planner inputs.
+hive knowledge or planner inputs.
 If the selected drone has no current position in the chosen view, the camera
-returns to the chosen overview. A new mission clears selection and restores nest
+returns to the chosen overview. A new mission clears selection and restores hive
 view. Switching views or resizing reframes the scene; ordinary updates preserve
 manual orbit and zoom.
 Overall framing fits the visible terrain's projected edges with a small margin rather than
 an enclosing sphere. Floating tags shrink with distance as you zoom out.
 
 Drones use yellow cuboid outlines and floating, selectable ID tags; the taller
-tower is labelled `NEST` and uses an orange hexagonal-prism outline, surrounded
+hive is labelled `HIVE` and uses an orange hexagonal-prism outline, surrounded
 by orange radius-3 rings spaced 1.5 blocks apart vertically from -3 to +3.
 These rings are a visual range guide, not the exact communication boundary:
 communication still uses the obstacle-aware 7x7x7 cube.
@@ -161,12 +164,22 @@ A drone's arrow indicates
 its last observed horizontal travel direction, not a telemetry-reported facing
 angle; it extends from the centre of the cuboid's front face, appears after
 movement is observed, and persists while stationary.
-In nest view, disconnected markers and their arrows stay faded at their last
+In hive view, disconnected markers and their arrows stay faded at their last
 reported position. In overall view, they track live plugin telemetry instead;
 only stale or faulted markers are faded.
-Drone tags are hidden when the nest's hexagonal body blocks them and return when
+Drone tags are hidden when the hive's hexagonal body blocks them and return when
 the camera or drone moves clear. Terrain outlines are white; the interface uses
-an amber/orange honeycomb palette.
+an amber/orange honeycomb palette. Terrain wireframes include the vertical corners
+and exposed side/bottom boundaries of observed solid cells, without interior
+coplanar seams or connections across unobserved gaps. The height filter applies
+to all three views.
+
+**SCOUT VIEW** shows only the selected unit's accumulated solid-cell knowledge,
+its own last observed position and a target it actually knows about. Select
+another unit in the roster to switch maps. Peer locations are not present in the
+individual debug contract, so other unit markers are omitted rather than copied
+from the hive or overall map. Loading, unavailable, mismatched and old-mission
+responses never fall back to global terrain or the globally reported target.
 
 ## Surface-following exploration
 
