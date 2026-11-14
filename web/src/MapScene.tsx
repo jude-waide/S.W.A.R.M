@@ -138,10 +138,11 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
           reportedTarget.y - origin.y,
           reportedTarget.z - origin.z,
         ]}>
-          <octahedronGeometry args={[0.8, 0]} />
-          <meshStandardMaterial color="#f07862" emissive="#a22e26" emissiveIntensity={0.8} transparent depthTest={false} depthWrite={false} />
+          <boxGeometry args={[1.2, 1.2, 1.2]} />
+          <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+          <Edges color="#ffc857" toneMapped={false} transparent depthTest={false} depthWrite={false} renderOrder={1} />
           <MapLabel position={[0, 1.5, 0]}>
-            <span className="map-tag">TARGET</span>
+            <span className="map-tag target-tag">TARGET</span>
           </MapLabel>
         </mesh>
       )}

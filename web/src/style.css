@@ -101,6 +101,7 @@ h2 { font: 500 15px var(--display); margin-top: 3px; letter-spacing: -.1px; }
 .map-viewport { position: absolute; z-index: 0; inset: 0; background: radial-gradient(ellipse at 50% 45%, #241a0e, #100d08 78%); }
 .map-tag { display: block; padding: 5px 8px; border: 1px solid currentColor; background: #100d08eb; font: 10px var(--mono); letter-spacing: 1px; white-space: nowrap; text-align: center; }
 .hive-tag { color: #ff9a24; }
+.target-tag { color: #ffc857; }
 .drone-tag { color: #ffe234; cursor: pointer; pointer-events: auto; }
 .drone-tag small { display: block; margin-top: 3px; font-size: 7px; letter-spacing: .5px; opacity: .7; }
 .drone-tag:hover, .drone-tag:focus-visible, .drone-tag.is-selected { background: #332e0e; outline: 1px solid #ffe234; outline-offset: 2px; }

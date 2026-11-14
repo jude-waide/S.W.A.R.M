@@ -32,7 +32,7 @@ Start the web app first, using the same local-only plugin key as
 ```text
 /set_hive 352 81 -128
 /set_target 392 76 -98
-/spawn_drones 5 1 2
+/spawn_drones 20 3 2
 /tp @e[type=minecraft:bee,tag=drone_swarm] 352.5 82.25 -127.5
 /start_mission
 ```
@@ -44,8 +44,9 @@ distinct exits to units initially sharing a cell. Wait for mission acceptance
 in the server log and `MINECRAFT` connected in the dashboard.
 
 Do not run `spawn_drones` again when restarting the same search: it adds units
-instead of replacing the current roster. The last argument is speed in blocks
-per second (`1..5`); normal testing uses `2`.
+instead of replacing the current roster. This prepares 20 bees; spawn range 3
+provides enough free setup cells before the teleport. The last argument is
+speed in blocks per second (`1..5`); normal testing uses `2`.
 
 ## Reset and restart the search
 
