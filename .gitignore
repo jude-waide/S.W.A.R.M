@@ -3,6 +3,10 @@
 **/obj/
 DroneSwarm.Web/wwwroot/
 
+# Gradle
+.gradle/
+build/
+
 # Node / Vite
 web/node_modules/
 web/dist/
