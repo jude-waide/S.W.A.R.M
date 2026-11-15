@@ -276,7 +276,7 @@ public sealed class MissionService
         lock (_gate)
             return _replay is null
                 ? new(null, [], _replayRecordingEnabled)
-                : _replay.GetIndex() with { RecordingEnabled = _replayRecordingEnabled };
+                : _replay.GetIndex(_replayRecordingEnabled);
     }
 
     public ReplayIndex SetReplayRecordingEnabled(bool enabled)
@@ -293,7 +293,7 @@ public sealed class MissionService
 
             return _replay is null
                 ? new(null, [], _replayRecordingEnabled)
-                : _replay.GetIndex() with { RecordingEnabled = _replayRecordingEnabled };
+                : _replay.GetIndex(_replayRecordingEnabled);
         }
     }
 

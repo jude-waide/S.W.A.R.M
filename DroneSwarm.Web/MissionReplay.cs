@@ -18,7 +18,8 @@ internal sealed class MissionReplay(string missionId)
             Changes(_overall, snapshot.LiveTerrain)));
     }
 
-    public ReplayIndex GetIndex() => new(MissionId, _frames.Select(frame => frame.Snapshot.GameTick!.Value).ToArray());
+    public ReplayIndex GetIndex(bool recordingEnabled) =>
+        new(MissionId, _frames.Select(frame => frame.Snapshot.GameTick!.Value).ToArray(), recordingEnabled);
 
     public PublicSnapshot GetFrame(int index)
     {
