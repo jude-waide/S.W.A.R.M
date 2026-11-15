@@ -279,6 +279,41 @@ public sealed class MissionCoordinationTests(ITestOutputHelper output)
     }
 
     [Fact]
+    public void ReplayRecordingCanBePausedAndResumedWithoutLosingRecordedFrames()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 60, Y = 12, Z = 60 }, ["A"]);
+        Assert.True(service.GetReplayIndex().RecordingEnabled);
+
+        service.SetReplayRecordingEnabled(false);
+        Accept(service, id, 1, 10, Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.Equal([0L], service.GetReplayIndex().GameTicks);
+        Assert.False(service.GetReplayIndex().RecordingEnabled);
+
+        service.SetReplayRecordingEnabled(true);
+        Accept(service, id, 2, 20, Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.Equal([0L, 20L], service.GetReplayIndex().GameTicks);
+        Assert.True(service.GetReplayIndex().RecordingEnabled);
+    }
+
+    [Fact]
+    public void EnablingReplayRecordingMidMissionStartsWithTheCurrentSnapshot()
+    {
+        var service = new MissionService();
+        service.SetReplayRecordingEnabled(false);
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 60, Y = 12, Z = 60 }, ["A"]);
+        Accept(service, id, 1, 10, Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.Empty(service.GetReplayIndex().GameTicks);
+
+        var replay = service.SetReplayRecordingEnabled(true);
+        Assert.Equal(id, replay.MissionId);
+        Assert.Equal([10L], replay.GameTicks);
+        Assert.True(replay.RecordingEnabled);
+    }
+
+    [Fact]
     public void OverallTargetIsVisibleBeforeDiscoveryWithoutChangingHiveOrScoutKnowledge()
     {
         var service = new MissionService();

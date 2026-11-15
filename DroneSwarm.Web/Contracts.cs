@@ -105,7 +105,8 @@ public sealed record PublicSnapshot(
     BlockPoint? OverallTarget,
     bool TargetFound);
 
-public sealed record ReplayIndex(string? MissionId, IReadOnlyList<long> GameTicks);
+public sealed record ReplayIndex(string? MissionId, IReadOnlyList<long> GameTicks, bool RecordingEnabled);
+public sealed record ReplayRecordingRequest(bool Enabled);
 
 public sealed record PublicCell(int X, int Y, int Z, long SourceTick);
 public sealed record PublicDrone(

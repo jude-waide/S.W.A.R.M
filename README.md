@@ -283,8 +283,14 @@ Recording ends at mission completion, survives reset/clear, and is replaced only
 when a new mission starts successfully (or lost on backend restart). Terrain
 history stores material changes rather than repeatedly copying whole maps; replay
 terrain source ticks indicate when that material first appeared in the recording.
-Read-only endpoints are `/api/public/replay` (mission ID and frame ticks) and
+Use **STOP RECORDING** / **START RECORDING** in the replay controls to pause or
+resume capture. Recording is on by default. Pausing preserves the current replay;
+frames observed while paused are not added. The control is public, like the
+read-only replay endpoints.
+Replay read endpoints are `/api/public/replay` (mission ID and frame ticks) and
 `/api/public/replay/{missionId}/frames/{frame}` (zero-based snapshot).
+The public recording toggle uses `POST /api/public/{game}/replay/recording` with
+`{"enabled":true}` or `{"enabled":false}`.
 
 ## Surface-following exploration
 

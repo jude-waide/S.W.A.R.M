@@ -33,12 +33,14 @@ type GameId = (typeof games)[number];
 export default function App() {
   const [game, setGame] = useState<GameId>("minecraft");
   const [liveSnapshot, setSnapshot] = useState(emptySnapshot);
-  const [replayIndex, setReplayIndex] = useState<ReplayIndex>({ missionId: null, gameTicks: [] });
+  const [replayIndex, setReplayIndex] = useState<ReplayIndex>({ missionId: null, gameTicks: [], recordingEnabled: true });
   const [replaying, setReplaying] = useState(false);
   const [replayFrame, setReplayFrame] = useState(0);
   const [recordedFrame, setRecordedFrame] = useState<{ index: number; snapshot: Snapshot } | null>(null);
   const [replayError, setReplayError] = useState<string | null>(null);
   const [replayIndexError, setReplayIndexError] = useState<string | null>(null);
+  const [replayToggleError, setReplayToggleError] = useState<string | null>(null);
+  const [replayToggleBusy, setReplayToggleBusy] = useState(false);
   const [playing, setPlaying] = useState(false);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
   const [cutaway, setCutaway] = useState(false);
@@ -89,7 +91,8 @@ export default function App() {
   useEffect(() => {
     snapshotRef.current = emptySnapshot;
     setSnapshot(emptySnapshot);
-    setReplayIndex({ missionId: null, gameTicks: [] });
+    setReplayIndex({ missionId: null, gameTicks: [], recordingEnabled: true });
+    setReplayToggleError(null);
     setReplaying(false);
     setPlaying(false);
     setRecordedFrame(null);
@@ -171,6 +174,30 @@ export default function App() {
       setApiOnline(false);
     }
   }, [game]);
+
+  const toggleReplayRecording = async () => {
+    const requestedGame = game;
+    setReplayToggleBusy(true);
+    setReplayToggleError(null);
+    try {
+      const response = await fetch(`${api}/api/public/${requestedGame}/replay/recording`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: !replayIndex.recordingEnabled }),
+      });
+      if (!response.ok) throw new Error(`Replay recording update failed (${response.status})`);
+      const next = await response.json() as ReplayIndex;
+      if (gameRef.current === requestedGame) {
+        setReplayIndex(next);
+        setReplayIndexError(null);
+      }
+    } catch (error) {
+      if (gameRef.current === requestedGame)
+        setReplayToggleError(error instanceof Error ? error.message : "Replay recording update failed");
+    } finally {
+      setReplayToggleBusy(false);
+    }
+  };
 
   useEffect(() => {
     void refresh();
@@ -475,7 +502,7 @@ export default function App() {
             CUTAWAY {cutaway ? "ON" : "OFF"}
           </button>
           <section className="replay-control panel" aria-label="Mission replay">
-            <button type="button" disabled={!replayIndex.missionId} aria-pressed={replaying} onClick={() => {
+            <button type="button" disabled={!replayIndex.gameTicks.length} aria-pressed={replaying} onClick={() => {
               setReplaying((value) => !value);
               setPlaying(false);
               setReplayFrame(0);
@@ -484,6 +511,10 @@ export default function App() {
               setInspectionOpen(false);
               setViewMode("hive");
             }}>{replaying ? "BACK TO LIVE" : "REPLAY SEARCH"}</button>
+            <button type="button" disabled={replayToggleBusy} aria-pressed={replayIndex.recordingEnabled}
+              onClick={() => void toggleReplayRecording()}>
+              {replayToggleBusy ? "UPDATING…" : replayIndex.recordingEnabled ? "STOP RECORDING" : "START RECORDING"}
+            </button>
             {replaying && <>
               <button type="button" aria-label={playing ? "Pause replay" : "Play replay"} onClick={() => {
                 if (replayFrame >= replayIndex.gameTicks.length - 1) setReplayFrame(0);
@@ -500,7 +531,8 @@ export default function App() {
               <span>{((replayTick - replayIndex.gameTicks[0]) / 20).toFixed(1)}s</span>
               {recordedFrame?.index !== replayFrame && !replayError && <span role="status">LOADING</span>}
             </>}
-            {(replayError || replayIndexError) && <span role="alert">{replayError ?? replayIndexError}</span>}
+            {(replayError || replayIndexError || replayToggleError) &&
+              <span role="alert">{replayError ?? replayToggleError ?? replayIndexError}</span>}
           </section>
           <details className="height-control">
             <summary>

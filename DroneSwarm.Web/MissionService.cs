@@ -15,6 +15,7 @@ public sealed class MissionService
     private Mission? _mission;
     private string? _lastResetMissionId;
     private MissionReplay? _replay;
+    private bool _replayRecordingEnabled = true;
 
     public PluginStatus GetPluginStatus()
     {
@@ -78,8 +79,12 @@ public sealed class MissionService
             }
             _mission = mission;
             _lastResetMissionId = null;
-            _replay = new MissionReplay(mission.Id);
-            _replay.Record(GetSnapshot());
+            _replay = null;
+            if (_replayRecordingEnabled)
+            {
+                _replay = new MissionReplay(mission.Id);
+                _replay.Record(GetSnapshot());
+            }
             return mission.LastResponse;
         }
     }
@@ -204,7 +209,7 @@ public sealed class MissionService
                         ? new[] { drone.OutstandingCommand!, next.Command }
                         : new[] { drone.OutstandingCommand! })
                     .ToArray());
-            if (!motionOnly) _replay!.Record(GetSnapshot());
+            if (!motionOnly && _replayRecordingEnabled) _replay?.Record(GetSnapshot());
             return mission.LastResponse;
         }
     }
@@ -269,7 +274,27 @@ public sealed class MissionService
     public ReplayIndex GetReplayIndex()
     {
         lock (_gate)
-            return _replay?.GetIndex() ?? new(null, []);
+            return _replay is null
+                ? new(null, [], _replayRecordingEnabled)
+                : _replay.GetIndex() with { RecordingEnabled = _replayRecordingEnabled };
+    }
+
+    public ReplayIndex SetReplayRecordingEnabled(bool enabled)
+    {
+        lock (_gate)
+        {
+            _replayRecordingEnabled = enabled;
+            if (enabled && _mission is not null && _mission.Phase != "complete" &&
+                (_replay is null || _replay.MissionId != _mission.Id))
+            {
+                _replay = new MissionReplay(_mission.Id);
+                _replay.Record(GetSnapshot());
+            }
+
+            return _replay is null
+                ? new(null, [], _replayRecordingEnabled)
+                : _replay.GetIndex() with { RecordingEnabled = _replayRecordingEnabled };
+        }
     }
 
     public MotionSnapshot GetMotionSnapshot()

@@ -52,6 +52,8 @@ app.MapGet("/api/public/replay", (GameSessionRegistry games) =>
     Results.Ok(games.GetMissionService(GameSessionRegistry.Minecraft).GetReplayIndex()));
 app.MapGet("/api/public/{game}/replay", (string game, GameSessionRegistry games) =>
     GetReplayIndex(game, games));
+app.MapPost("/api/public/{game}/replay/recording", (string game, ReplayRecordingRequest request, GameSessionRegistry games) =>
+    SetReplayRecording(game, request.Enabled, games));
 app.MapGet("/api/public/replay/{missionId}/frames/{frame:int}",
     (string missionId, int frame, GameSessionRegistry games) =>
         GetReplayFrame(GameSessionRegistry.Minecraft, missionId, frame, games));
@@ -188,6 +190,18 @@ static IResult GetReplayIndex(string game, GameSessionRegistry games)
     try
     {
         return Results.Ok(games.GetMissionService(game).GetReplayIndex());
+    }
+    catch (ProtocolException exception)
+    {
+        return ProtocolError(exception);
+    }
+}
+
+static IResult SetReplayRecording(string game, bool enabled, GameSessionRegistry games)
+{
+    try
+    {
+        return Results.Ok(games.GetMissionService(game).SetReplayRecordingEnabled(enabled));
     }
     catch (ProtocolException exception)
     {

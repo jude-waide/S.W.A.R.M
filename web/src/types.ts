@@ -55,7 +55,7 @@ export type DroneDebug = {
   peerPositions: { droneId: string; position: Point; sourceTick: number }[];
 };
 
-export type ReplayIndex = { missionId: string | null; gameTicks: number[] };
+export type ReplayIndex = { missionId: string | null; gameTicks: number[]; recordingEnabled: boolean };
 export type MotionSnapshot = {
   missionId: string;
   version: number;
