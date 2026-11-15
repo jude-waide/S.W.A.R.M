@@ -837,18 +837,31 @@ public sealed class MissionService
         var eligible = mission.Drones.Values.Where(drone =>
             !drone.Faulted && drone.Position is not null && !drone.TargetKnown && !drone.RecallKnown &&
             drone.RescueAssignment is null && drone.RendezvousPeerId is null && !drone.ReturnAfterRendezvous)
-            .ToDictionary(drone => drone.Id, drone => drone.FrontierMovesSinceUpload, StringComparer.Ordinal);
-        foreach (var (id, moves) in eligible)
+            .ToDictionary(drone => drone.Id,
+                drone => (Moves: drone.FrontierMovesSinceUpload, Returning: drone.ReturningToUpload),
+                StringComparer.Ordinal);
+        foreach (var (id, schedule) in eligible)
         foreach (var peerId in mission.Drones[id].ConnectedPeers)
         {
             if (StringComparer.Ordinal.Compare(id, peerId) >= 0 || oldPeers[id].Contains(peerId) ||
-                !eligible.TryGetValue(peerId, out var peerMoves))
+                !eligible.TryGetValue(peerId, out var peerSchedule))
                 continue;
-            // Use pre-reset counters for simultaneous encounters; the lower ID keeps an equal schedule.
-            var exploring = mission.Drones[moves < peerMoves ? id : peerId];
-            if (exploring.ReturningToUpload || eligible[exploring.Id] >= FrontierMovesBeforeUpload)
-                continue;
-            exploring.FrontierMovesSinceUpload = 0;
+            // Use the pre-reset schedules so simultaneous encounters make the same choice regardless of iteration order.
+            var droneDue = schedule.Returning || schedule.Moves >= FrontierMovesBeforeUpload;
+            var peerDue = peerSchedule.Returning || peerSchedule.Moves >= FrontierMovesBeforeUpload;
+            string deferUploadId;
+            if (droneDue && peerDue)
+                deferUploadId = StringComparer.Ordinal.Compare(id, peerId) < 0 ? peerId : id;
+            else if (droneDue)
+                deferUploadId = peerId;
+            else if (peerDue)
+                deferUploadId = id;
+            else
+                deferUploadId = schedule.Moves < peerSchedule.Moves ? id : peerId;
+
+            var deferred = mission.Drones[deferUploadId];
+            deferred.FrontierMovesSinceUpload = 0;
+            deferred.ReturningToUpload = false;
         }
     }
 

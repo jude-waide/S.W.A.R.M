@@ -569,6 +569,25 @@ public sealed class MissionCoordinationTests(ITestOutputHelper output)
         Assert.Equal("returningToUpload", simulation.Debug("B").Behavior);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void WhenBothPeersAreDueOnlyTheLowerDroneIdKeepsItsUploadSchedule(bool reverseRoster)
+    {
+        var simulation = reverseRoster
+            ? new EncounterSimulation("B", "A")
+            : new EncounterSimulation("A", "B");
+        simulation.Advance("A", 24);
+        simulation.Advance("B", 24);
+        simulation.Positions["A"] = new() { X = 20.5, Y = 12.5, Z = 20.5 };
+        simulation.Meet("B", "A");
+
+        Assert.Equal(24, simulation.Debug("A").FrontierMovesSinceUpload);
+        Assert.Equal("returningToUpload", simulation.Debug("A").Behavior);
+        Assert.Equal(0, simulation.Debug("B").FrontierMovesSinceUpload);
+        Assert.NotEqual("returningToUpload", simulation.Debug("B").Behavior);
+    }
+
     [Fact]
     public void TargetKnowledgeStillTakesPriorityOverDeferringAnUpload()
     {
