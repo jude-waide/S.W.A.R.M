@@ -26,6 +26,7 @@ export type Snapshot = {
   worldId: string | null;
   tower: Point | null;
   targetReported: boolean;
+  targetFound: boolean;
   reportedTarget: Point | null;
   overallTarget: Point | null;
   terrain: { x: number; y: number; z: number; sourceTick: number }[];
@@ -51,4 +52,13 @@ export type DroneDebug = {
   cells: { x: number; y: number; z: number; solid: boolean; sourceTick: number }[];
   knownTarget: Point | null;
   frontierMovesSinceUpload: number;
+  peerPositions: { droneId: string; position: Point; sourceTick: number }[];
+};
+
+export type ReplayIndex = { missionId: string | null; gameTicks: number[] };
+export type MotionSnapshot = {
+  missionId: string;
+  version: number;
+  gameTick: number;
+  drones: { id: string; position: Point | null; positionCurrent: boolean; faulted: boolean }[];
 };

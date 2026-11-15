@@ -78,6 +78,26 @@ public final class Main extends JavaPlugin {
         if (target != null) target.getChunk().addPluginChunkTicket(this);
     }
 
+    public int clearMission() {
+        int removed = droneManager.removeAll();
+        for (var world : getServer().getWorlds()) {
+            for (var bee : world.getEntitiesByClass(org.bukkit.entity.Bee.class)) {
+                if (bee.getScoreboardTags().contains("drone_swarm")) {
+                    bee.remove();
+                    removed++;
+                }
+            }
+        }
+        if (hiveLandmark != null) hiveLandmark.close();
+        if (targetLandmark != null) targetLandmark.close();
+        hiveLandmark = null;
+        targetLandmark = null;
+        hive = null;
+        target = null;
+        retainLandmarkChunks();
+        return removed;
+    }
+
     public DroneManager getDroneManager() {
         return droneManager;
     }

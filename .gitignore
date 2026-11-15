@@ -59,6 +59,7 @@ appsettings.Development.json
 
 # CMake
 cmake-build-*/
+SkyrimAdapter/build/
 
 # Mongo Explorer plugin
 .idea/**/mongoSettings.xml

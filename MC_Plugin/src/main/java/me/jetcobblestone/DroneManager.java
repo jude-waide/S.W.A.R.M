@@ -55,6 +55,10 @@ public class DroneManager {
     }
 
     public JsonArray getInfo(MissionBounds bounds, World missionWorld) {
+        return getInfo(bounds, missionWorld, true);
+    }
+
+    public JsonArray getInfo(MissionBounds bounds, World missionWorld, boolean includeCells) {
 
         JsonArray dronesJson = new JsonArray();
 
@@ -78,6 +82,7 @@ public class DroneManager {
             int maxX = bounds.minX() + MissionBounds.WIDTH - 1;
             int maxY = bounds.minY() + MissionBounds.HEIGHT - 1;
             int maxZ = bounds.minZ() + MissionBounds.DEPTH - 1;
+            if (includeCells)
             for (int xb = Math.max(bounds.minX(), x - drone_range);
                  xb <= Math.min(maxX, x + drone_range); xb++) {
                 for (int yb = Math.max(bounds.minY(), y - drone_range);
@@ -165,7 +170,9 @@ public class DroneManager {
                     commandId,
                     destination.get("x").getAsInt(),
                     destination.get("y").getAsInt(),
-                    destination.get("z").getAsInt()
+                    destination.get("z").getAsInt(),
+                    obj.has("afterCommandId") && !obj.get("afterCommandId").isJsonNull()
+                            ? UUID.fromString(obj.get("afterCommandId").getAsString()) : null
             );
         }
     }
@@ -188,5 +195,20 @@ public class DroneManager {
                 drone.reset();
             }
         }
+
+    }
+
+    public int removeAll() {
+        int removed = 0;
+        for (DroneAI drone : drones.values()) {
+            if (drone.getMob().isValid()) {
+                drone.uninstall();
+                drone.getMob().remove();
+                removed++;
+            }
+        }
+        drones.clear();
+        nextId = 0;
+        return removed;
     }
 }

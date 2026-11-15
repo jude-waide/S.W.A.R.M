@@ -62,6 +62,10 @@ public class MissionCommands {
         registrar.register(Commands.literal("reset_mission")
                 .executes(context -> handleResetMission(context.getSource().getSender()) ? 1 : 0)
                 .build(), "Reset the active mission and stop telemetry.");
+        registrar.register(Commands.literal("clear_mission")
+                .requires(source -> source.getSender().hasPermission("dronesim.clear"))
+                .executes(context -> handleClearMission(context.getSource().getSender()) ? 1 : 0)
+                .build(), "Reset the mission, remove swarm bees and restore hive/target blocks.");
     }
 
     // ---------------------------------------------------------------- set_hive
@@ -275,6 +279,23 @@ public class MissionCommands {
             return true;
         }
         sender.sendMessage("Reset requested. Check the server log for backend confirmation.");
+        return true;
+    }
+
+    private boolean handleClearMission(CommandSender sender) {
+        Runnable cleanup = () -> {
+            int removed = plugin.clearMission();
+            sender.sendMessage("Mission cleared: removed " + removed
+                    + " swarm bees and restored hive/target blocks. Ready for fresh setup.");
+        };
+        SessionManager session = plugin.getSessionManager();
+        if (session == null) {
+            cleanup.run();
+        } else if (session.resetMission(cleanup)) {
+            sender.sendMessage("Clear requested. Waiting for backend reset before removing mission objects.");
+        } else {
+            sender.sendMessage("Clear could not start; wait for mission initialisation or a pending reset to finish.");
+        }
         return true;
     }
 

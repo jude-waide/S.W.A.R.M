@@ -6,6 +6,279 @@ namespace DroneSwarm.Web.Tests;
 public sealed class MissionCoordinationTests(ITestOutputHelper output)
 {
     [Fact]
+    public void ContinuousFrontierArrivalWaitsForSensingInsteadOfCirclingUnobservedViewpoints()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 60, Y = 12, Z = 60 }, ["A"], continuousFlight: true);
+        var command = Assert.Single(Accept(service, id, 1, 10,
+            Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 }, CellIsSolid)).Commands);
+        var position = new DronePosition
+        {
+            X = command.Destination.X + 0.5,
+            Y = command.Destination.Y + 0.5,
+            Z = command.Destination.Z + 0.5
+        };
+        var knowledge = service.GetDroneDebug("A").Cells;
+        var arrived = new DroneTelemetry
+        {
+            DroneId = "A", Availability = "available", Position = position,
+            CommandResult = new() { CommandId = command.CommandId, Status = "completed" }
+        };
+        Assert.Empty(service.AcceptFrame(id, new()
+        {
+            Sequence = 2, GameTick = 12, Drones = [arrived]
+        }, "frontier-arrived", motionOnly: true).Commands);
+        arrived.CommandResult = null;
+        Assert.Empty(service.AcceptFrame(id, new()
+        {
+            Sequence = 3, GameTick = 14, Drones = [arrived]
+        }, "frontier-still-waiting", motionOnly: true).Commands);
+        Assert.Equal(knowledge, service.GetDroneDebug("A").Cells);
+        Assert.NotEmpty(Accept(service, id, 4, 20, Drone("A", position, CellIsSolid)).Commands);
+    }
+
+    [Fact]
+    public void ContinuousFrontierCanBufferDepartureWhenSensedBeforeArrivalAcknowledgement()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 60, Y = 12, Z = 60 }, ["A"], continuousFlight: true);
+        var command = Assert.Single(Accept(service, id, 1, 10,
+            Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 }, CellIsSolid)).Commands);
+        var response = Accept(service, id, 2, 20, Drone("A", new()
+        {
+            X = command.Destination.X + 0.5,
+            Y = command.Destination.Y + 0.5,
+            Z = command.Destination.Z + 0.5
+        }, CellIsSolid));
+        Assert.Equal(command.CommandId, response.Commands[0].CommandId);
+        Assert.Equal(command.CommandId, response.Commands[1].AfterCommandId);
+    }
+
+    [Fact]
+    public void ContinuousReturnReservesAndChainsOneFutureMove()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 6, Y = 12, Z = 0 }, ["A", "B"], continuousFlight: true);
+        var response = Accept(service, id, 1, 10,
+            Drone("A", new() { X = 6.5, Y = 12.5, Z = 0.5 }, CellIsSolid),
+            Drone("B", new() { X = 6.5, Y = 12.5, Z = 1.5 }, CellIsSolid));
+        Assert.Equal(4, response.Commands.Count);
+        Assert.Equal(4, response.Commands.Select(command => command.Destination).Distinct().Count());
+        foreach (var group in response.Commands.GroupBy(command => command.DroneId))
+        {
+            var moves = group.ToArray();
+            Assert.Null(moves[0].AfterCommandId);
+            Assert.Equal(moves[0].CommandId, moves[1].AfterCommandId);
+            Assert.Equal(1, Math.Abs(moves[0].Destination.X - moves[1].Destination.X) +
+                Math.Abs(moves[0].Destination.Y - moves[1].Destination.Y) +
+                Math.Abs(moves[0].Destination.Z - moves[1].Destination.Z));
+        }
+    }
+
+    [Fact]
+    public void MotionFramesPromoteBufferedMovesWithoutSensingRelayingOrRecordingTerrain()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 6, Y = 12, Z = 0 }, ["A"], continuousFlight: true);
+        var response = Accept(service, id, 1, 10,
+            Drone("A", new() { X = 6.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        var current = response.Commands[0];
+        var queued = response.Commands[1];
+        var knowledge = service.GetDroneDebug("A");
+        var replay = service.GetReplayIndex();
+        var telemetry = new DroneTelemetry
+        {
+            DroneId = "A", Availability = "available",
+            Position = new() { X = current.Destination.X + 0.5, Y = current.Destination.Y + 0.5, Z = current.Destination.Z + 0.5 },
+            CommandResult = new() { CommandId = current.CommandId, Status = "completed" }
+        };
+        var frame = new ObservationFrame { Sequence = 2, GameTick = 12, Drones = [telemetry] };
+        var promoted = service.AcceptFrame(id, frame, "motion", motionOnly: true);
+        Assert.Equal(queued.CommandId, promoted.Commands[0].CommandId);
+        Assert.Equal(queued.CommandId, promoted.Commands[1].AfterCommandId);
+        Assert.Equal(current.CommandId, Assert.Single(promoted.AcknowledgedResults).CommandId);
+        Assert.Same(promoted, service.AcceptFrame(id, frame, "motion", motionOnly: true));
+        Assert.Equal(knowledge.Cells, service.GetDroneDebug("A").Cells);
+        Assert.Equal(knowledge.PeerPositions, service.GetDroneDebug("A").PeerPositions);
+        Assert.Equal(replay.GameTicks, service.GetReplayIndex().GameTicks);
+        var live = Assert.Single(service.GetMotionSnapshot().Drones).Position!;
+        Assert.Equal((telemetry.Position.X, telemetry.Position.Y, telemetry.Position.Z), (live.X, live.Y, live.Z));
+        Assert.False(Assert.Single(service.GetSnapshot().Drones).PositionCurrent);
+        Assert.Equal(0.5, Assert.Single(service.GetSnapshot().Drones).Position!.X);
+        Assert.Equal("changed_retry", Assert.Throws<ProtocolException>(
+            () => service.AcceptFrame(id, frame, "motion")).Code);
+
+        telemetry.CommandResult = new() { CommandId = queued.CommandId, Status = "blocked", Reason = "New obstacle" };
+        var blocked = service.AcceptFrame(id, new() { Sequence = 3, GameTick = 14, Drones = [telemetry] },
+            "blocked-motion", motionOnly: true);
+        Assert.DoesNotContain(blocked.Commands, command => command.CommandId == promoted.Commands[1].CommandId);
+        Assert.All(blocked.Commands.Where(command => command.AfterCommandId is not null),
+            command => Assert.Contains(blocked.Commands, predecessor => predecessor.CommandId == command.AfterCommandId));
+    }
+
+    [Fact]
+    public void ContinuousReturnStopsAtHiveUntilTheNextRealKnowledgeCycleConfirmsRecovery()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 6, Y = 12, Z = 0 }, ["A"],
+            new() { X = 3.5, Y = 12.5, Z = 0.5 }, continuousFlight: true);
+        var command = Assert.Single(Accept(service, id, 1, 10,
+            Drone("A", new() { X = 4.5, Y = 12.5, Z = 0.5 }, CellIsSolid)).Commands);
+        Assert.Equal(3, command.Destination.X);
+        var position = new DronePosition { X = 3.5, Y = 12.5, Z = 0.5 };
+        var response = service.AcceptFrame(id, new()
+        {
+            Sequence = 2, GameTick = 12,
+            Drones = [new()
+            {
+                DroneId = "A", Availability = "available", Position = position,
+                CommandResult = new() { CommandId = command.CommandId, Status = "completed" }
+            }]
+        }, "arrived", motionOnly: true);
+        Assert.Empty(response.Commands);
+        Assert.False(service.GetSnapshot().TargetReported);
+        Accept(service, id, 3, 20, Drone("A", position, CellIsSolid));
+        Assert.Equal("complete", service.GetSnapshot().Phase);
+    }
+
+    [Fact]
+    public void MotionValidationIsAtomicAndRequiresOptIn()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 60, Y = 12, Z = 60 }, ["A"]);
+        var frame = new ObservationFrame { Sequence = 1, GameTick = 10,
+            Drones = [Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 }, CellIsSolid)] };
+        Assert.Equal("motion_not_enabled", Assert.Throws<ProtocolException>(
+            () => service.AcceptFrame(id, frame, "motion", motionOnly: true)).Code);
+        service.Reset(id);
+        id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 60, Y = 12, Z = 60 }, ["A"], continuousFlight: true);
+        Assert.Equal("unexpected_cells", Assert.Throws<ProtocolException>(
+            () => service.AcceptFrame(id, frame, "motion", motionOnly: true)).Code);
+        Assert.Equal(0, service.GetSnapshot().GameTick);
+        Assert.Single(service.GetReplayIndex().GameTicks);
+        frame.Drones[0].Cells.Clear();
+        var response = service.AcceptFrame(id, frame, "valid-motion", motionOnly: true);
+        Assert.Empty(response.Commands);
+        Assert.Equal(1, response.Sequence);
+    }
+
+    [Fact]
+    public void SpawnedScoutsCanStartBehindAnObstacleWithoutInventingALiveHiveLink()
+    {
+        var service = new MissionService();
+        Initialize(service, Guid.NewGuid().ToString(), new() { X = 60, Y = 12, Z = 60 }, ["A"],
+            new() { X = 2.5, Y = 12.5, Z = 0.5 },
+            (x, y, z) => CellIsSolid(x, y, z) || (x == 1 && y == 12 && z == 0));
+
+        var scout = Assert.Single(service.GetSnapshot().Drones);
+        Assert.False(scout.DirectlyConnectedToTower);
+        Assert.False(scout.ConnectedToTower);
+        Assert.Equal(2.5, scout.Position!.X);
+    }
+
+    [Fact]
+    public void ScoutSightingsReachTheHiveAndAnotherScoutOnlyThroughKnowledgeExchange()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 60, Y = 12, Z = 60 }, ["A", "B", "C"]);
+        Accept(service, id, 1, 10,
+            Drone("A", new() { X = 3.5, Y = 12.5, Z = 0.5 }, CellIsSolid),
+            Drone("B", new() { X = 6.5, Y = 12.5, Z = 0.5 }, CellIsSolid),
+            Drone("C", new() { X = -20.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.Equal(0.5, service.GetSnapshot().Drones.Single(drone => drone.Id == "B").Position!.X);
+        Assert.Equal(6.5, service.GetDroneDebug("A").PeerPositions.Single(peer => peer.DroneId == "B").Position.X);
+
+        Accept(service, id, 2, 20,
+            Drone("A", new() { X = 3.5, Y = 12.5, Z = 0.5 }, CellIsSolid),
+            Drone("B", new() { X = 20.5, Y = 12.5, Z = 0.5 }, CellIsSolid),
+            Drone("C", new() { X = -20.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        var hiveSighting = service.GetSnapshot().Drones.Single(drone => drone.Id == "B");
+        Assert.Equal(6.5, hiveSighting.Position!.X);
+        Assert.Equal(10, hiveSighting.LastSeenTick);
+        Assert.False(hiveSighting.PositionCurrent);
+        Assert.DoesNotContain(service.GetDroneDebug("C").PeerPositions, peer => peer.DroneId == "B" && peer.SourceTick == 10);
+
+        Accept(service, id, 3, 30,
+            Drone("A", new() { X = 3.5, Y = 12.5, Z = 0.5 }, CellIsSolid),
+            Drone("B", new() { X = 21.5, Y = 12.5, Z = 0.5 }, CellIsSolid),
+            Drone("C", new() { X = -2.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        var relayed = service.GetDroneDebug("C").PeerPositions.Single(peer => peer.DroneId == "B");
+        Assert.Equal(6.5, relayed.Position.X);
+        Assert.Equal(10, relayed.SourceTick);
+    }
+
+    [Fact]
+    public void DiscoveryAndHiveReportingAreSeparateAndCompletionWaitsForOutstandingMovement()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 20, Y = 12, Z = 0 }, ["A"]);
+        var exploring = Accept(service, id, 1, 10,
+            Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        var command = Assert.Single(exploring.Commands);
+        Accept(service, id, 2, 20,
+            Drone("A", new() { X = 18.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.True(service.GetSnapshot().TargetFound);
+        Assert.False(service.GetSnapshot().TargetReported);
+        Accept(service, id, 3, 30,
+            Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.True(service.GetSnapshot().TargetReported);
+        Assert.NotEqual("complete", service.GetSnapshot().Phase);
+        Assert.Equal(0, service.GetSnapshot().RecoveredCount);
+
+        var stopped = Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 }, CellIsSolid);
+        stopped.CommandResult = new() { CommandId = command.CommandId, Status = "completed" };
+        var response = Accept(service, id, 4, 40, stopped);
+        Assert.Equal("complete", service.GetSnapshot().Phase);
+        Assert.Empty(response.Commands);
+        var frames = service.GetReplayIndex().GameTicks.Count;
+        Accept(service, id, 5, 50,
+            Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.Equal(frames, service.GetReplayIndex().GameTicks.Count);
+    }
+
+    [Fact]
+    public void ReplayRecordsEveryAcceptedFramePreservesOldKnowledgeAndSurvivesResetUntilNextMission()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 60, Y = 12, Z = 60 }, ["A"]);
+        var frame = new ObservationFrame
+        {
+            Sequence = 1, GameTick = 10,
+            Drones = [Drone("A", new() { X = 12.5, Y = 12.5, Z = 0.5 },
+                (x, y, z) => CellIsSolid(x, y, z) || (x == 14 && y == 12 && z == 0))]
+        };
+        service.AcceptFrame(id, frame, "same-frame");
+        service.AcceptFrame(id, frame, "same-frame");
+        Accept(service, id, 2, 20,
+            Drone("A", new() { X = 12.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.Equal([0L, 10L, 20L], service.GetReplayIndex().GameTicks);
+        var first = service.GetReplayFrame(id, 1);
+        Assert.Contains(first.LiveTerrain, cell => cell.X == 14 && cell.Y == 12 && cell.Z == 0);
+        Assert.DoesNotContain(first.Terrain, cell => cell.X == 14 && cell.Y == 12 && cell.Z == 0);
+        Assert.DoesNotContain(service.GetReplayFrame(id, 2).LiveTerrain, cell => cell.X == 14 && cell.Y == 12 && cell.Z == 0);
+        Assert.Equal(0.5, service.GetReplayFrame(id, 0).Drones[0].LivePosition!.X);
+        Assert.Equal(400, Assert.Throws<ProtocolException>(() => service.GetReplayFrame(id, -1)).StatusCode);
+        service.Reset(id);
+        Assert.Equal(id, service.GetReplayIndex().MissionId);
+        Assert.Equal(10, service.GetReplayFrame(id, 1).GameTick);
+        var next = Guid.NewGuid().ToString();
+        Initialize(service, next, new() { X = 60, Y = 12, Z = 60 }, ["B"]);
+        Assert.Equal(next, service.GetReplayIndex().MissionId);
+        Assert.Single(service.GetReplayIndex().GameTicks);
+        Assert.Equal(404, Assert.Throws<ProtocolException>(() => service.GetReplayFrame(id, 0)).StatusCode);
+    }
+
+    [Fact]
     public void OverallTargetIsVisibleBeforeDiscoveryWithoutChangingHiveOrScoutKnowledge()
     {
         var service = new MissionService();
@@ -21,6 +294,120 @@ public sealed class MissionCoordinationTests(ITestOutputHelper output)
 
         service.Reset(missionId);
         Assert.Null(service.GetSnapshot().OverallTarget);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MatureConnectedSwarmLeavesTimeForMotionFramesBetweenObservationCycles(bool variedObservationAges)
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        var ids = Enumerable.Range(0, 20).Select(index => index.ToString()).ToArray();
+        Initialize(service, id, new() { X = 60, Y = 12, Z = 60 }, ids, continuousFlight: true);
+        long sequence = 0;
+        var viewpoints = (from z in Enumerable.Range(0, 13)
+                          from x in Enumerable.Range(0, 19)
+                          select new DronePosition { X = -54 + x * 6 + 0.5, Y = 12.5, Z = -36 + z * 6 + 0.5 }).ToArray();
+        for (var index = 0; index < viewpoints.Length; index++)
+            Accept(service, id, ++sequence, variedObservationAges ? index * 9 / viewpoints.Length : 0,
+                ids.Select((droneId, owner) => Drone(droneId,
+                    viewpoints[(index + (variedObservationAges ? owner * 11 : 0)) % viewpoints.Length], CellIsSolid)).ToArray());
+        var telemetry = ids.Select((droneId, index) => Drone(droneId, new()
+        {
+            X = index % 5 + 0.5, Y = 12.5, Z = index / 5 + 0.5
+        }, CellIsSolid)).ToArray();
+        var timer = Stopwatch.StartNew();
+        Accept(service, id, ++sequence, 10, telemetry);
+        var snapshot = service.GetSnapshot();
+        timer.Stop();
+        output.WriteLine($"Mature connected continuous-flight observation and snapshot: {timer.Elapsed.TotalMilliseconds:F0} ms.");
+        Assert.All(snapshot.Drones, drone => Assert.True(drone.KnownCellCount > 60_000));
+        Assert.True(timer.Elapsed < TimeSpan.FromMilliseconds(500),
+            $"A mature connected swarm took {timer.Elapsed.TotalMilliseconds:F0} ms, starving 2-tick motion frames.");
+        for (var tick = 20; tick <= 40; tick += 10)
+            Accept(service, id, ++sequence, tick, telemetry);
+        timer.Restart();
+        Accept(service, id, ++sequence, 50, telemetry);
+        service.GetSnapshot();
+        timer.Stop();
+        output.WriteLine($"Steady mature observation and snapshot: {timer.Elapsed.TotalMilliseconds:F0} ms.");
+        Assert.True(timer.Elapsed < TimeSpan.FromMilliseconds(500),
+            $"Steady mature-map updates took {timer.Elapsed.TotalMilliseconds:F0} ms, starving motion frames.");
+    }
+
+    [Fact]
+    public void MatureReturningSwarmKeepsLongDistanceRoutesWithinTheMotionBudget()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        var ids = Enumerable.Range(0, 20).Select(index => index.ToString()).ToArray();
+        Initialize(service, id, new() { X = 60, Y = 12, Z = 60 }, ids, continuousFlight: true);
+        long sequence = 0;
+        for (var z = -60; z <= 60; z += 6)
+        for (var x = -60; x <= 60; x += 6)
+            Accept(service, id, ++sequence, 0,
+                ids.Select(droneId => Drone(droneId, new() { X = x + 0.5, Y = 12.5, Z = z + 0.5 }, CellIsSolid)).ToArray());
+        var telemetry = ids.Select((droneId, index) => Drone(droneId, new()
+        {
+            X = 57.5 + index % 5, Y = 12.5, Z = 57.5 + index / 5
+        }, CellIsSolid)).ToArray();
+        var timer = Stopwatch.StartNew();
+        var response = Accept(service, id, ++sequence, 10, telemetry);
+        var snapshot = service.GetSnapshot();
+        timer.Stop();
+        Assert.True(snapshot.TargetFound);
+        Assert.NotEmpty(response.Commands);
+        Assert.All(snapshot.Drones, drone => Assert.True(drone.KnownCellCount > 100_000));
+        output.WriteLine($"Mature long-distance return planning: {timer.Elapsed.TotalMilliseconds:F0} ms.");
+        Assert.True(timer.Elapsed < TimeSpan.FromMilliseconds(500),
+            $"Long-distance returns took {timer.Elapsed.TotalMilliseconds:F0} ms, starving motion frames.");
+    }
+
+    [Fact]
+    public void PeerLinksShareHistoricalTerrainOnContactAndLaterAirChangesAsDeltas()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 60, Y = 12, Z = 60 }, ["A", "B"]);
+        Accept(service, id, 1, 10,
+            Drone("A", new() { X = 33.5, Y = 12.5, Z = 0.5 },
+                (x, y, z) => CellIsSolid(x, y, z) || (x == 36 && y == 12 && z == 0)),
+            Drone("B", new() { X = -20.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Accept(service, id, 2, 20,
+            Drone("A", new() { X = 20.5, Y = 12.5, Z = 0.5 }, CellIsSolid),
+            Drone("B", new() { X = -20.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.DoesNotContain(service.GetDroneDebug("B").Cells, cell => cell.X == 36 && cell.Solid);
+        Accept(service, id, 3, 30,
+            Drone("A", new() { X = 20.5, Y = 12.5, Z = 0.5 }, CellIsSolid),
+            Drone("B", new() { X = 19.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.Contains(service.GetDroneDebug("B").Cells,
+            cell => cell.X == 36 && cell.Y == 12 && cell.Z == 0 && cell.Solid && cell.SourceTick == 10);
+        Assert.DoesNotContain(service.GetSnapshot().Terrain, cell => cell.X == 36);
+        Accept(service, id, 4, 40,
+            Drone("A", new() { X = 20.5, Y = 12.5, Z = 0.5 },
+                (x, y, z) => CellIsSolid(x, y, z) || (x == 23 && y == 12 && z == 0)),
+            Drone("B", new() { X = 19.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.Contains(service.GetDroneDebug("B").Cells,
+            cell => cell.X == 23 && cell.Y == 12 && cell.Z == 0 && cell.Solid && cell.SourceTick == 40);
+        Accept(service, id, 5, 50,
+            Drone("A", new() { X = 20.5, Y = 12.5, Z = 0.5 }, CellIsSolid),
+            Drone("B", new() { X = 19.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.Contains(service.GetDroneDebug("B").Cells,
+            cell => cell.X == 23 && cell.Y == 12 && cell.Z == 0 && !cell.Solid && cell.SourceTick == 50);
+    }
+
+    [Fact]
+    public void BatchedKnowledgeRelaySupportsMoreThanSixtyFourSourceOwners()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        var ids = Enumerable.Range(0, 70).Select(index => index.ToString()).ToArray();
+        Initialize(service, id, new() { X = 60, Y = 12, Z = 60 }, ids);
+        Accept(service, id, 1, 10, ids.Select(droneId => Drone(droneId,
+            new() { X = droneId == "69" ? 2.5 : 0.5, Y = 12.5, Z = 0.5 },
+            (x, y, z) => CellIsSolid(x, y, z) || (x == 5 && y == 12 && z == 0))).ToArray());
+        Assert.Contains(service.GetDroneDebug("0").Cells, cell => cell.X == 5 && cell.Y == 12 && cell.Z == 0 && cell.Solid);
     }
 
     [Fact]
@@ -72,6 +459,19 @@ public sealed class MissionCoordinationTests(ITestOutputHelper output)
 
         Assert.Equal(visible, service.GetDroneDebug("A").KnownTarget is not null);
         Assert.Equal(visible, service.GetSnapshot().TargetReported);
+    }
+
+    [Fact]
+    public void UpdatedAirRemovesAFormerTargetOccluderFromScoutSensing()
+    {
+        var service = new MissionService();
+        var id = Guid.NewGuid().ToString();
+        Initialize(service, id, new() { X = 2, Y = 12, Z = 2 }, ["A"]);
+        Accept(service, id, 1, 10, Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 },
+            (x, y, z) => CellIsSolid(x, y, z) || (x == 1 && y == 12 && z == 0)));
+        Assert.Null(service.GetDroneDebug("A").KnownTarget);
+        Accept(service, id, 2, 20, Drone("A", new() { X = 0.5, Y = 12.5, Z = 0.5 }, CellIsSolid));
+        Assert.NotNull(service.GetDroneDebug("A").KnownTarget);
     }
 
     [Fact]
@@ -466,11 +866,13 @@ public sealed class MissionCoordinationTests(ITestOutputHelper output)
         }
     }
 
-    private static void Initialize(MissionService service, string missionId, BlockPoint target, string[] droneIds)
+    private static void Initialize(MissionService service, string missionId, BlockPoint target, string[] droneIds,
+        DronePosition? initialPosition = null, Func<int, int, int, bool>? solid = null, bool continuousFlight = false)
     {
         service.Initialize(new()
         {
             ProtocolVersion = 1,
+            ContinuousFlight = continuousFlight,
             MissionId = missionId,
             WorldId = "coordination-tests",
             BoundsMin = new() { X = -64, Y = 0, Z = -64 },
@@ -481,7 +883,7 @@ public sealed class MissionCoordinationTests(ITestOutputHelper output)
                 Sequence = 0,
                 GameTick = 0,
                 Drones = droneIds
-                    .Select(id => Drone(id, new() { X = 0.5, Y = 12.5, Z = 0.5 }, CellIsSolid))
+                    .Select(id => Drone(id, initialPosition ?? new() { X = 0.5, Y = 12.5, Z = 0.5 }, solid ?? CellIsSolid))
                     .ToList()
             }
         }, "initial");

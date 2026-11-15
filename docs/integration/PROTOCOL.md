@@ -25,7 +25,15 @@ coordination on both sides.
 | GET | `/api/plugin/status` | Read active mission ID and lifecycle status. |
 | POST | `/api/plugin/missions` | Initialise a mission with its first observation frame. |
 | POST | `/api/plugin/missions/{missionId}/observations` | Submit a fresh frame or retry the latest frame. |
+| POST | `/api/plugin/missions/{missionId}/telemetry` | Continuous-flight positions/results without terrain. |
 | DELETE | `/api/plugin/missions/{missionId}` | Explicitly reset/end that mission. |
+
+These unprefixed routes remain the Minecraft-compatible aliases. The same
+protocol is available under `/api/plugin/skyrim/*` for the Skyrim adapter.
+The dashboard reads each independent session from `/api/public/{game}/snapshot`,
+`/api/public/{game}/replay`, and `/api/public/{game}/drones/{droneId}`; SignalR
+uses `/hubs/mission/{game}`. The legacy public routes and `/hubs/mission`
+continue to target Minecraft.
 
 Status returns `200` with `protocolVersion`, nullable `activeMissionId`, and a
 `phase` string. Before initialisation, use `activeMissionId: null` and
@@ -36,13 +44,16 @@ Use mission IDs alone; there is no server-instance guard. After a restart, the
 plugin must arrange a fresh mission, not pretend the old in-memory mission
 survived. It must not reuse mission IDs.
 
-There is one active mission, including while its final view remains inspectable.
+There is one active mission per game, including while its final view remains
+inspectable. Minecraft and Skyrim state, mission IDs, replays, and live updates
+are isolated, so both games can run concurrently.
 Multiple sequential missions can share a world ID. A world ID identifies one
 world/dimension; switching dimension needs a new mission.
 
 - Minecraft supplies a new mission UUID and fixed roster.
-- Every initial drone must provide available telemetry and have a clear direct
-  tower link.
+- Every initial drone must provide available telemetry. A direct tower link or
+  line of sight is not required at initialisation; deployment positions are
+  initially known to the tower. Normal communication checks apply during flight.
 - Initial locations must be inside the exploration bounds.
 - Tower and target coordinates remain fixed during the mission.
 - Repeat initialisation with the same ID and identical body returns the original
@@ -62,6 +73,7 @@ world/dimension; switching dimension needs a new mission.
 ```json
 {
   "protocolVersion": 1,
+  "continuousFlight": true,
   "missionId": "cd498fae-48dd-48c6-b22c-d5ea8f6629ad",
   "worldId": "demo-world:overworld",
   "boundsMin": { "x": -64, "y": 32, "z": -64 },
@@ -88,6 +100,8 @@ the separate `overallTarget` snapshot field; this is not a detection or report.
 
 Initialisation returns an accepted-frame response with no movement commands.
 Fresh observations begin at sequence 1.
+`continuousFlight` is optional and defaults to false for legacy clients.
+Deploy the updated backend before enabling it in the plugin.
 
 ## Observation Frame
 
@@ -183,27 +197,65 @@ The plugin handles physical positioning in that cell and validates execution.
 The planner uses six face-neighbour known-air cells and stays inside bounds.
 
 `acknowledgedResults` contains `{ "droneId": "...", "commandId": "..." }` entries.
-One move may be outstanding per drone. Responses repeat that move's ID until a
-terminal result arrives. An empty command list means no new/outstanding movement,
-not a fabricated success. The plugin executes each ID at most once.
+Legacy clients have one outstanding move per drone. Continuous-flight clients
+may also receive one buffered successor with `afterCommandId` set to the current
+move's ID. Commands are ordered current first, successor second. Both destinations,
+the occupied cell and current move's source are reserved against other drones.
+Successors use only already-known air, never predicted observations.
+
+On completion, the executor starts the buffered successor in the same tick,
+without a zero-velocity waypoint pause. It retains terminal results in order,
+reporting the oldest until acknowledged. A late successor may start after its
+predecessor completed, but never after a blocked/failed predecessor. Blocked/failed
+results discard the successor; failures fault the drone. The backend promotes
+the successor when it accepts the predecessor's completion, and may replenish
+the buffer using existing knowledge. Repeated command IDs execute at most once.
+Arrival at a legitimate hive upload/recovery point waits for the next real
+knowledge cycle rather than starting another unnecessary move.
+Arrival at a search-frontier viewpoint also waits for a real observation from
+that cell before departure. A full sensing cycle in the destination cell may
+release the successor even before completion is acknowledged; otherwise the
+pending viewpoint survives motion-only acknowledgements. Transit through
+searched cells remains buffered. Frontier waits normally last up to one sensing
+interval (500 ms) plus response time; motion positions never count as sensing.
+
+Responses repeat outstanding command IDs until terminal results arrive.
+An empty command list means no new/outstanding movement, not a fabricated success.
+The plugin executes each ID at most once.
 
 After ten simulation seconds without a terminal result, show command stalled,
 retain the command identity, and issue no conflicting replacement.
 
 ## Sequencing, Clock, and Retry
 
-- One observation request in flight, targeting a batch every 500 real ms.
+- One shared request in flight across both routes. Continuous-flight clients
+  send positions/results every 2 ticks (up to 10 Hz); every 10 ticks they send
+  a full observation instead (2 Hz). Legacy clients keep full 500 ms frames.
+- `/telemetry` uses the observation frame shape and the same complete roster,
+  but available entries have `cells: []`. Terrain cells are rejected there;
+  observation cubes remain mandatory on `/observations`.
+- Lightweight frames validate and update positions/results, but never sense
+  targets, relay knowledge, rebuild public terrain, or append replay frames.
+  Movement-result handling may refill the one-waypoint buffer from known air.
 - Sequence numbers are consecutive, beginning at 0 in initialisation.
-- Retry exactly the same body and sequence after a timeout.
+- Retry exactly the same route, body and sequence after a timeout.
 - Cache/replay the latest accepted response without another state advance.
 - Older sequences, sequence gaps, and changed-body retries return conflicts.
 - Discard missed intervals rather than queueing historical batches.
 - Game ticks never decrease within a mission. Use 20 ticks per simulation second
   and 10 ticks per decision/relay cycle.
-- A same-tick fresh frame is a heartbeat: refresh telemetry freshness, but do not
-  advance behaviour or relay.
+- A same-tick fresh frame refreshes freshness without advancing the simulation.
+  A full frame may still perform the knowledge cycle due since the last full
+  decision, even if a lightweight frame already reported that tick.
 - Advance at most one decision/relay cycle per fresh frame. Never fast-forward
   decisions over unobserved gaps.
+- Terrain/search relay uses source deltas on established links and the current
+  source map on new/restored links. Freeze all source data before transfers;
+  received changes become eligible for relay on the next knowledge cycle.
+  This backend optimization does not change the mandatory full observation cubes.
+- The overall observer map is maintained from actual accepted observations,
+  separately from hive/scout knowledge. Cache public terrain between full frames
+  and update scout solid indexes when newer terrain changes air/solid state.
 - After three real seconds without a valid fresh frame, show connection lost
   and suspend behaviour timers. Duplicate retries do not count as fresh frames.
 - On resumption, rebase the tick baseline without charging the outage to timers.
@@ -242,3 +294,14 @@ clears old points, markers, and selection.
   on the Hive View only after a legitimate report reaches the tower.
 - Inspecting or subscribing must never change simulated knowledge.
 - Frozen telemetry means frozen markers, not extrapolated live motion.
+- `motionUpdated` carries `{ missionId, version, gameTick, drones }`, where each
+  drone has `{ id, position, positionCurrent, faulted }`. It shares the snapshot
+  version stream; gaps trigger resnapshot. These positions update only the
+  observer overlay (and a scout's own debug marker), never hive or peer memories.
+- `missionUpdated`, subscribed debug knowledge and replay remain at observation
+  cadence. Hive positions and connectivity advance only on real knowledge cycles.
+- The browser interpolates between received positions, never beyond the latest
+  sample. Stale/faulted markers snap to their last report and stop. Markers,
+  labels, links, follow camera and cutaway use the same animated positions.
+  Position updates preserve terrain layout/geometry; source-tick-only changes
+  do not rebuild terrain buffers.

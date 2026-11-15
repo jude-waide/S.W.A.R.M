@@ -28,15 +28,30 @@ export function getMapData(
   if (!scout || !debug || debug.missionId !== snapshot.missionId || debug.droneId !== selectedId) {
     return { terrain: [], drones: [], reportedTarget: null };
   }
+  const positionCurrent = scout.livePositionCurrent && debug.gameTick !== null &&
+    snapshot.gameTick !== null && debug.gameTick >= snapshot.gameTick - 20;
   return {
     terrain: debug.cells.filter((cell) => cell.solid),
     drones: [{
       ...scout,
-      position: debug.position,
-      positionCurrent: scout.livePositionCurrent && debug.gameTick !== null &&
-        snapshot.gameTick !== null && debug.gameTick >= snapshot.gameTick - 20,
+      position: positionCurrent ? scout.livePosition : debug.position,
+      positionCurrent,
       connectedPeers: [],
-    }],
+    }, ...debug.peerPositions.filter((peer) => peer.droneId !== selectedId).map((peer): PublicDrone => ({
+      id: peer.droneId,
+      position: peer.position,
+      positionCurrent: positionCurrent && debug.connectedPeers.includes(peer.droneId) && peer.sourceTick === debug.gameTick,
+      livePosition: null,
+      livePositionCurrent: false,
+      connectedToTower: false,
+      directlyConnectedToTower: false,
+      connectedPeers: [],
+      faulted: false,
+      behavior: "lastSeenByScout",
+      knownCellCount: 0,
+      lastSeenTick: peer.sourceTick,
+      lastReportAgeSeconds: debug.gameTick === null ? null : Math.max(0, debug.gameTick - peer.sourceTick) / 20,
+    }))],
     reportedTarget: debug.knownTarget,
   };
 }

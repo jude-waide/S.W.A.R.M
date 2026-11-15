@@ -1,11 +1,12 @@
-import { Edges, Html, OrbitControls } from "@react-three/drei";
-import { Canvas, useThree } from "@react-three/fiber";
+import { Edges, Html, Line as VisibleLine, OrbitControls } from "@react-three/drei";
+import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState, type ComponentRef, type ReactNode } from "react";
 import * as THREE from "three";
 import type { MapViewMode, Point, PublicDrone, Snapshot } from "./types";
 import { getOverviewCamera } from "./mapCamera";
 import type { MapData } from "./mapDrones";
 import { getTerrainGeometry } from "./terrainWireframe";
+import { receivePosition, samplePosition, type PositionTrack } from "./motion";
 
 type Props = {
   snapshot: Snapshot;
@@ -14,10 +15,14 @@ type Props = {
   selectedId: string | null;
   focusRequest: number;
   viewMode: MapViewMode;
+  cutaway: boolean;
+  interpolate: boolean;
   onSelect: (id: string) => void;
 };
 
-export default function MapScene({ snapshot, mapData, heightLimit, selectedId, focusRequest, viewMode, onSelect }: Props) {
+type AnimatedPosition = { track: PositionTrack | null; position: THREE.Vector3 };
+
+export default function MapScene({ snapshot, mapData, heightLimit, selectedId, focusRequest, viewMode, cutaway, interpolate, onSelect }: Props) {
   const [nestMesh, setNestMesh] = useState<THREE.Mesh | null>(null);
   useEffect(() => {
     const timer = window.setTimeout(() => window.dispatchEvent(new Event("resize")), 50);
@@ -28,20 +33,40 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
   const { drones, terrain, reportedTarget } = mapData;
   const selectedDrone = drones.find((drone) => drone.id === selectedId);
   const selectedPosition = selectedDrone?.positionCurrent ? selectedDrone.position : null;
-  const towerRangeCircle = useMemo(() => {
-    const positions = new Float32Array(96 * 3);
-    for (let index = 0; index < 96; index++) {
-      const angle = index * Math.PI * 2 / 96;
-      positions[index * 3] = 3 * Math.cos(angle);
-      positions[index * 3 + 2] = 3 * Math.sin(angle);
+  const scoutViewId = viewMode === "scout" ? selectedId : null;
+  const animation = useMemo(() => new Map<string, AnimatedPosition>(), [snapshot.missionId, viewMode, scoutViewId, interpolate]);
+  for (const drone of drones) {
+    if (drone.position && !animation.has(drone.id))
+      animation.set(drone.id, { track: null, position: new THREE.Vector3(
+        drone.position.x - origin.x, drone.position.y - origin.y, drone.position.z - origin.z,
+      ) });
+  }
+  useEffect(() => {
+    const now = performance.now();
+    for (const drone of drones) {
+      if (!drone.position) continue;
+      const entry = animation.get(drone.id)!;
+      const tick = viewMode === "overall" || (viewMode === "scout" && drone.id === selectedId)
+        ? snapshot.gameTick : drone.lastSeenTick;
+      entry.track = receivePosition(entry.track, drone.position, tick ?? 0, now,
+        interpolate && drone.positionCurrent && !drone.faulted);
     }
-    return positions;
-  }, []);
+  }, [animation, drones, snapshot.gameTick, viewMode, selectedId, interpolate]);
+  const selectedAnimated = selectedPosition && selectedId ? animation.get(selectedId)?.position ?? null : null;
+  const cutawayPlane = useMemo(() => new THREE.Plane(), []);
+  const clippingPlanes = useMemo(() => cutaway ? [cutawayPlane] : [], [cutaway, cutawayPlane]);
   const visibleTerrain = useMemo(
     () => terrain.filter((cell) => cell.y <= heightLimit),
     [terrain, heightLimit],
   );
-  const terrainGeometry = useMemo(() => getTerrainGeometry(visibleTerrain), [visibleTerrain]);
+  const terrainLayout = useRef(visibleTerrain);
+  if (terrainLayout.current.length !== visibleTerrain.length ||
+      visibleTerrain.some((cell, index) => {
+        const previous = terrainLayout.current[index];
+        return cell.x !== previous.x || cell.y !== previous.y || cell.z !== previous.z;
+      })) terrainLayout.current = visibleTerrain;
+  const stableTerrain = terrainLayout.current;
+  const terrainGeometry = useMemo(() => getTerrainGeometry(stableTerrain), [stableTerrain]);
   const surfaceEdges = terrainGeometry.edges;
   const facePositions = useMemo(() => new Float32Array(terrainGeometry.faces.flatMap((point) => [
     point.x - origin.x, point.y - origin.y, point.z - origin.z,
@@ -59,13 +84,17 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
     }
     return positions;
   }, [surfaceEdges, origin.x, origin.y, origin.z]);
-  const overviewPoints = useMemo(() => {
+  const terrainOverviewPoints = useMemo(() => {
     const points: THREE.Vector3[] = [];
     for (const x of [-3, 3])
       for (const y of [-3, 3])
         for (const z of [-3, 3]) points.push(new THREE.Vector3(x, y, z));
     for (let index = 0; index < edgePositions.length; index += 3)
       points.push(new THREE.Vector3(edgePositions[index], edgePositions[index + 1], edgePositions[index + 2]));
+    return points;
+  }, [edgePositions]);
+  const overviewPoints = useMemo(() => {
+    const points = [...terrainOverviewPoints];
     for (const point of [...drones.map((drone) => drone.position), reportedTarget]) {
       if (!point) continue;
       for (const dx of [-1, 1])
@@ -78,13 +107,15 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
             ));
     }
     return points;
-  }, [edgePositions, drones, reportedTarget, origin.x, origin.y, origin.z]);
+  }, [terrainOverviewPoints, drones, reportedTarget, origin.x, origin.y, origin.z]);
 
   return (
     <Canvas
       camera={{ position: [18, 14, 18], rotation: [-0.53, Math.PI / 4, 0], fov: 44 }}
       dpr={[1, 1.6]}
+      gl={{ localClippingEnabled: true }}
     >
+      <MotionAnimation animation={animation} origin={origin} />
       <color attach="background" args={["#100d08"]} />
       <fog attach="fog" args={["#100d08", 180, 600]} />
       <ambientLight intensity={1.3} />
@@ -101,6 +132,7 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
             polygonOffset
             polygonOffsetFactor={1}
             polygonOffsetUnits={1}
+            clippingPlanes={clippingPlanes}
           />
         </mesh>
       )}
@@ -109,7 +141,7 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
           <bufferGeometry>
             <bufferAttribute attach="attributes-position" args={[edgePositions, 3]} />
           </bufferGeometry>
-          <lineBasicMaterial color="#ffffff" transparent opacity={0.85} toneMapped={false} />
+          <lineBasicMaterial color="#ffffff" transparent opacity={0.85} toneMapped={false} clippingPlanes={clippingPlanes} />
         </lineSegments>
       )}
       {snapshot.tower && (
@@ -122,14 +154,6 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
           <MapLabel position={[0, 2, 0]}>
             <span className="map-tag hive-tag">HIVE</span>
           </MapLabel>
-          {[-3, -1.5, 0, 1.5, 3].map((height) => (
-            <lineLoop key={height} position={[0, height, 0]} renderOrder={1}>
-              <bufferGeometry>
-                <bufferAttribute attach="attributes-position" args={[towerRangeCircle, 3]} />
-              </bufferGeometry>
-              <lineBasicMaterial color="#ff9a24" transparent opacity={0.45} toneMapped={false} depthTest={false} depthWrite={false} />
-            </lineLoop>
-          ))}
         </group>
       )}
       {reportedTarget && (
@@ -148,31 +172,24 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
       )}
       {drones.map((drone) => {
         if (!drone.position) return null;
-        const position: [number, number, number] = [
-          drone.position.x - origin.x,
-          drone.position.y - origin.y,
-          drone.position.z - origin.z,
-        ];
+        const position = animation.get(drone.id)!.position;
         return (
           <group key={drone.id}>
             {drone.directlyConnectedToTower && (
-              <Line start={[0, 0, 0]} end={position} color="#ffb347" opacity={0.3} />
+              <AnimatedLink end={position} color="#ffad32" opacity={1} width={2.8} />
             )}
             {drone.connectedPeers.map((peerId) => {
               const peer = drones.find((candidate) => candidate.id === peerId);
               if (!peer?.position || !peer.connectedToTower || !drone.connectedToTower ||
                   peerId.localeCompare(drone.id) < 0) return null;
               return (
-                <Line
+                <AnimatedLink
                   key={`${drone.id}-${peerId}`}
                   start={position}
-                  end={[
-                    peer.position.x - origin.x,
-                    peer.position.y - origin.y,
-                    peer.position.z - origin.z,
-                  ]}
+                  end={animation.get(peerId)!.position}
                   color="#ffd36a"
-                  opacity={0.24}
+                  opacity={0.85}
+                  width={2}
                 />
               );
             })}
@@ -187,9 +204,53 @@ export default function MapScene({ snapshot, mapData, heightLimit, selectedId, f
           </group>
         );
       })}
-      <CameraControls position={selectedPosition} origin={origin} focusRequest={focusRequest} viewMode={viewMode} points={overviewPoints} />
+      <CameraControls position={selectedPosition} animatedPosition={selectedAnimated} origin={origin} focusRequest={focusRequest} viewMode={viewMode} points={overviewPoints} />
+      {cutaway && <TerrainCutaway plane={cutawayPlane} position={selectedId ? animation.get(selectedId)?.position ?? null : null} />}
     </Canvas>
   );
+}
+
+function MotionAnimation({ animation, origin }: { animation: Map<string, AnimatedPosition>; origin: Point }) {
+  useFrame(() => {
+    const now = performance.now();
+    for (const entry of animation.values()) {
+      if (!entry.track) continue;
+      const point = samplePosition(entry.track, now);
+      entry.position.set(point.x - origin.x, point.y - origin.y, point.z - origin.z);
+    }
+  }, -2);
+  return null;
+}
+
+function AnimatedLink({ start, end, color, opacity, width }: {
+  start?: THREE.Vector3; end: THREE.Vector3; color: string; opacity: number; width: number;
+}) {
+  const line = useRef<ComponentRef<typeof VisibleLine>>(null);
+  const points = useMemo(() => [new THREE.Vector3(), new THREE.Vector3()], []);
+  useFrame(() => {
+    if (!line.current) return;
+    const geometry = line.current.geometry;
+    const a = geometry.getAttribute("instanceStart");
+    const b = geometry.getAttribute("instanceEnd");
+    a.setXYZ(0, start?.x ?? 0, start?.y ?? 0, start?.z ?? 0);
+    b.setXYZ(0, end.x, end.y, end.z);
+    a.needsUpdate = true;
+    b.needsUpdate = true;
+  });
+  return <VisibleLine ref={line} points={points} color={color} transparent opacity={opacity} lineWidth={width}
+    depthTest={false} depthWrite={false} toneMapped={false} renderOrder={1} frustumCulled={false} />;
+}
+
+function TerrainCutaway({ plane, position }: { plane: THREE.Plane; position: THREE.Vector3 | null }) {
+  const anchor = useMemo(() => new THREE.Vector3(), []);
+  const normal = useMemo(() => new THREE.Vector3(), []);
+  useFrame(({ camera }) => {
+    anchor.set(position?.x ?? 0, 0, position?.z ?? 0);
+    normal.set(anchor.x - camera.position.x, 0, anchor.z - camera.position.z);
+    if (normal.lengthSq() < 0.0001) normal.set(0, 0, -1);
+    plane.setFromNormalAndCoplanarPoint(normal.normalize(), anchor);
+  });
+  return null;
 }
 
 function MapLabel({ position, children, nestMesh }: {
@@ -220,14 +281,16 @@ function DroneMarker({
   onSelect,
 }: {
   drone: PublicDrone;
-  position: [number, number, number];
+  position: THREE.Vector3;
   selected: boolean;
   nestMesh: THREE.Mesh | null;
   onSelect: (id: string) => void;
 }) {
   const previousPosition = useRef<Point | null>(null);
+  const marker = useRef<THREE.Group>(null);
   const [heading, setHeading] = useState<number | null>(null);
   const opacity = drone.faulted ? 0.42 : drone.positionCurrent ? 1 : 0.3;
+  useFrame(() => marker.current?.position.copy(position));
 
   useEffect(() => {
     if (!drone.positionCurrent || !drone.position) return;
@@ -241,7 +304,7 @@ function DroneMarker({
   }, [drone.position, drone.positionCurrent]);
 
   return (
-    <group position={position} rotation={[0, heading ?? 0, 0]} scale={selected ? 1.3 : 1}>
+    <group ref={marker} rotation={[0, heading ?? 0, 0]} scale={selected ? 1.3 : 1}>
       <mesh onClick={(event) => {
         event.stopPropagation();
         onSelect(drone.id);
@@ -275,8 +338,9 @@ function DroneMarker({
   );
 }
 
-function CameraControls({ position, origin, focusRequest, viewMode, points }: {
+function CameraControls({ position, animatedPosition, origin, focusRequest, viewMode, points }: {
   position: Point | null;
+  animatedPosition: THREE.Vector3 | null;
   origin: Point;
   focusRequest: number;
   viewMode: MapViewMode;
@@ -333,7 +397,16 @@ function CameraControls({ position, origin, focusRequest, viewMode, points }: {
     }
     focusedRequest.current = focusRequest;
     orbit.update();
-  }, [camera, position, origin.x, origin.y, origin.z, delta, focusRequest, viewMode]);
+  }, [camera, following, origin.x, origin.y, origin.z, delta, focusRequest, viewMode]);
+
+  useFrame(() => {
+    const orbit = controls.current;
+    if (!orbit || !animatedPosition) return;
+    delta.copy(animatedPosition).sub(orbit.target);
+    camera.position.add(delta);
+    orbit.target.copy(animatedPosition);
+    orbit.update();
+  });
 
   return <OrbitControls ref={controls} makeDefault enableDamping dampingFactor={0.08} enablePan={!position} />;
 }
@@ -343,19 +416,17 @@ function Line({
   end,
   color,
   opacity,
+  width = 1.5,
 }: {
   start: [number, number, number];
   end: [number, number, number];
   color: string;
   opacity: number;
+  width?: number;
 }) {
   const points = useMemo(() => [new THREE.Vector3(...start), new THREE.Vector3(...end)], [start, end]);
   return (
-    <lineSegments renderOrder={1}>
-      <bufferGeometry>
-        <bufferAttribute attach="attributes-position" args={[new Float32Array(points.flatMap((point) => point.toArray())), 3]} />
-      </bufferGeometry>
-      <lineBasicMaterial color={color} transparent opacity={opacity} depthTest={false} depthWrite={false} />
-    </lineSegments>
+    <VisibleLine points={points} color={color} transparent opacity={opacity} lineWidth={width}
+      depthTest={false} depthWrite={false} toneMapped={false} renderOrder={1} />
   );
 }

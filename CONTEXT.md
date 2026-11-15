@@ -2,9 +2,10 @@
 
 ## Project Purpose
 
-Build a Minecraft drone simulation connected to a web application. Drones explore
+Build a drone simulation connected to a web application. Minecraft drones explore
 unknown terrain to find a hidden target, building a map while their communication
-is constrained by range.
+is constrained by range. Skyrim is a second, isolated game session using the same
+planner and dashboard.
 
 The primary goal is a compelling demonstration of drones coordinating under
 communication constraints, rather than a scientifically rigorous simulator or
@@ -45,11 +46,12 @@ a fresh mission; moving-target tracking is outside this version.
 - Serve built React assets from the same ASP.NET Core app for Azure and LAN.
 - No database, Redis, or separate Azure SignalR service is required for the
   single-instance demo.
-- Minecraft integration: a plugin, implemented separately from the web app.
-- A teammate is building the plugin in parallel. The integration contract can
-  now use the agreed [version-one baseline](docs/integration/PROTOCOL.md).
+- Minecraft integration: a Paper plugin, implemented separately from the web app.
+- Skyrim integration: a separate local game adapter; it must translate Skyrim
+  observations and movement into the shared bounded voxel contract.
 - The web application owns drone behaviour, including deciding where drones
-  should search next and simulating drone-to-drone communication.
+  should search next and simulating drone-to-drone communication. Game adapters
+  report observations and execute planned movement.
 - The interface should show a military-green 3D map and each drone's location.
   This is a visual style for the Minecraft simulation.
 
@@ -72,8 +74,9 @@ a fresh mission; moving-target tracking is outside this version.
 ## Scale Requirements
 
 - Drone count is variable; do not hardcode a ten-drone product limit.
-- Validate 50 drones at two batches per second, with backend planning keeping
-  up with 500 ms cycles and a target of 30 FPS for the desktop map within the
+- Validate 50 drones at two observation batches per second plus up to 10 Hz
+  positions/results, with backend knowledge/planning keeping up with 500 ms
+  cycles and a target of 30 FPS for the desktop map within the
   full exploration bounds. This is a validation load, not a hard roster cap.
 - Variable count is not a promise of unlimited capacity.
 - The exploration volume is 128x64x128 blocks (X by Y by Z).
@@ -97,28 +100,32 @@ a fresh mission; moving-target tracking is outside this version.
 
 ## Mission Storage
 
-- One active mission is held in backend memory.
+- One active mission per supported game is held in backend memory. Minecraft
+  and Skyrim missions are isolated and may run simultaneously.
 - Restarting the backend clears mission state.
-- Minecraft can initialise a fresh mission.
-- Saved missions, replay, and a persistence database are not required for this
-  first version.
-- Each mission belongs to one Minecraft world/dimension and has a fixed roster
-  of drone IDs established at initialisation.
-- The same world can be used for multiple missions; world ID and mission ID are
-  distinct. Missions are sequential, with only one active at a time.
+- Each game adapter can initialise a fresh mission in its own session.
+- The backend records a read-only in-memory replay from mission initialisation
+  through recovery. It survives reset and is replaced on the next successful
+  mission initialisation; restarting the backend loses it. No database is used.
+- Each mission belongs to one game world/dimension and has a fixed roster of
+  drone IDs established at initialisation.
+- Within each game, the same world can be used for multiple missions; world ID
+  and mission ID are distinct. Missions are sequential, with one active mission
+  per game.
 - Each fresh mission has a new ID and starts with empty maps and drone memories;
   discovery knowledge does not carry between missions in the same world.
 - Identical initialisation retries for the same mission ID are idempotent.
-- A different mission ID cannot silently replace an active mission: the plugin
-  must explicitly reset/end the old mission first.
+- A different mission ID cannot silently replace an active mission in the same
+  game: its adapter must explicitly reset/end the old mission first.
 - Reject stale mission IDs, including old requests after a reset.
 - Use mission IDs alone, without a backend-instance guard. Retired IDs can be
   tracked only for the current process lifetime; after restart, a delayed old
   initialisation cannot be distinguished from fresh setup if no mission exists.
   The plugin must use a new ID and never assume lost state survived.
 - Adding/removing drones or changing dimension requires a fresh mission.
-- Every initial drone must have a clear direct communication link to the tower.
-  Reject initialisation otherwise. Drones may subsequently move out of contact.
+- Spawned drones need not have line of sight or a direct link to start.
+  Their deployment positions are initially known to the hive. Live communication
+  and recovery still require the normal range and unobstructed-link checks.
 
 ## Hosting
 
@@ -168,19 +175,40 @@ contains backend-generated movement commands. Concrete schemas and error
 responses are defined in the agreed [protocol](docs/integration/PROTOCOL.md);
 the main delivery requirements are summarised below.
 
-The plugin sends one batch covering all drones every 500 ms (two updates per
-second), receiving movement commands in each response. Validate this cadence
-with the plugin implementation. The browser uses SignalR: a tower snapshot on
+The plugin sends positions/results for all drones every 2 ticks (up to 10 Hz),
+replacing every fifth frame with full terrain observations (2 Hz). Sensing,
+knowledge relay and replay stay at observation cadence; waypoint-buffer refill
+uses only existing knowledge. Legacy clients retain full 500 ms frames.
+Buffered transit remains continuous, but a search-frontier destination must be
+observed by a real sensing cycle before departure. Retain that pending viewpoint
+across motion-only completion acknowledgements; position updates alone must not
+mark it searched. This prevents queued turns from repeatedly skipping the
+observation that makes a frontier useful.
+Established terrain links relay changed cells/search memberships; new or restored
+links receive the source's current map. Capture sources before applying transfers,
+so received knowledge advances only one hop per cycle. Keep the observer map
+separate and update it from accepted observation cubes, never as a planner input.
+Maintain per-scout solid indexes and cache public terrain between full frames;
+growing maps must not starve the shared movement request stream.
+Use goal-directed known-air routing for long returns and peer searches, retaining
+blocked-edge/traffic checks and nearest-peer-region selection.
+The browser uses SignalR: a tower snapshot on
 connection, then versioned incremental updates, with resnapshot on a version
-gap. Clear old map data and selection when the mission changes.
+gap. Lightweight motion updates are observer telemetry, not a knowledge channel.
+Interpolate received positions without extrapolation, sharing animated positions
+between markers, labels, links and camera; reuse unchanged terrain geometry.
+Clear old map data and selection when the mission changes.
 
 ### Delivery Safety
 
 - Every mission has an ID, and observation batches have increasing sequence
   numbers.
 - Movement commands have IDs and execution acknowledgements.
-- At most one move may be outstanding per drone. Repeat its command ID until
-  completion/blockage is reported; the plugin executes each ID at most once.
+- Continuous-flight clients opt in to one active move plus one reserved buffered
+  successor tied to its predecessor's ID. Legacy clients keep one move. Repeat
+  command IDs until completion/blockage; execute each ID at most once. Start a
+  valid buffered successor without a waypoint pause, retain results in order,
+  and discard the successor if its predecessor blocks/fails.
 - Continue observations while a move is in progress. One drone waiting for its
   result must not prevent other drones from progressing.
 - After 10 simulation seconds without a final move result, mark that drone
@@ -191,8 +219,8 @@ gap. Clear old map data and selection when the mission changes.
   and continue other drones. Do not silently count a faulted drone as recovered.
 - Retrying a batch must not advance planning or execute another move; it returns
   the same result.
-- The plugin keeps one observation request in flight. On timeout it retries the
-  identical sequence and body until the response arrives, then sends a fresh
+- The plugin keeps one request in flight across full and lightweight frames.
+  On timeout it retries the identical route, sequence and body until the response arrives, then sends a fresh
   batch. Missed intervals are skipped, not queued.
 - The backend caches the latest accepted response, rejects older sequences and
   changed-body retries, and does not advance state on duplicate requests.
@@ -457,6 +485,15 @@ Mission initialisation and reset are controlled through the authenticated plugin
   or any other drone.
 - The main tower map keeps disconnected markers at their last reported
   positions even while a live debug view is open.
+- Scout maps show peer sightings from that scout's own memory. Sightings retain
+  their observation tick as they relay between scouts and the hive; stale markers
+  never use live observer telemetry.
+- A camera-facing cutaway toggle clips only the displayed known terrain,
+  centered on the selected scout or hive. It never changes mission knowledge.
+- Persistent header milestones distinguish target discovery, hive receipt, and
+  all drones home and at rest. Completion requires no outstanding drone movement.
+- Replay offers hive/overall views, scrubbing and 1x-16x playback. Individual
+  scout inspection remains live-only; replay never overlays live scout knowledge.
 
 ### Dashboard Layout
 

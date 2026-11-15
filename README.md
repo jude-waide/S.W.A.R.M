@@ -1,8 +1,10 @@
 # Drone Swarm
 
 The web application is an ASP.NET Core service with a React/Three.js dashboard.
-It accepts the version 1 Minecraft plugin protocol, keeps one active mission in
-memory, and serves the public dashboard and SignalR updates from the same app.
+It accepts the version 1 Minecraft mission protocol and provides an isolated
+Skyrim session using the same cell-based contract. Minecraft and Skyrim can run
+one mission each at the same time; the dashboard switches between their live
+maps and SignalR updates.
 
 For a single-instance Linux Azure App Service deployment, see the
 [Azure deployment guide](docs/AZURE.md).
@@ -25,10 +27,15 @@ For a single-instance Linux Azure App Service deployment, see the
    `npm run dev` from `web`; Vite uses the same-origin API by default, so proxy
    configuration is needed when running it separately.
 
-The plugin writes to `/api/plugin/*` with the `X-Plugin-Key` header. The
-dashboard is public and read-only. Mission state is in memory and is lost when
-The server restarts. Configure HTTPS for hosted deployments; HTTP is only
-appropriate on a trusted private hotspot with a separate short-lived key.
+The Minecraft plugin writes to `/api/plugin/*`; the Skyrim adapter uses
+`/api/plugin/skyrim/*`. Both use the `X-Plugin-Key` header. The dashboard is
+public and read-only. Mission state is in memory and is lost when the server
+restarts. The native SKSE adapter in [SkyrimAdapter/](SkyrimAdapter/) is an
+early prototype: it samples exterior landscape height and moves temporary
+references, but does not yet sense structures or other non-landscape obstacles
+and still needs an in-game smoke test. Configure HTTPS for hosted deployments;
+HTTP is only appropriate on a trusted private hotspot with a separate
+short-lived key.
 When using Vite separately, ensure ASP.NET Core is listening at
 `http://localhost:5000`.
 
@@ -88,6 +95,18 @@ resets the backend mission and makes the current drones available for another
 run. If the plugin was restarted and no longer has the mission ID, restart the
 web app to clear its in-memory mission before starting another one.
 
+For a clean retest, use **`/clear_mission`** as an operator. It waits for backend
+reset confirmation, removes managed and loaded `drone_swarm`-tagged bees, clears
+the roster and restores the original hive/target blocks and removes their labels.
+Other entities and player-modified blocks are preserved. Then set the hive and
+target, spawn fresh drones and start again in the same world. Do not issue setup
+commands until the command confirms completion. `/reset_mission` still keeps
+landmarks and surviving drones.
+
+Spawned bees no longer need a clear initial hive link to begin a mission.
+Bounds and availability checks remain, and real communication/recovery still
+require an unobstructed in-range link.
+
 `set_hive` places a real beehive block; `set_target` places a real honey block.
 Choose free, non-liquid cells inside the mission bounds. Both get full-bright,
 glowing block-display outlines and floating `HIVE` / `SEARCH TARGET` labels.
@@ -129,6 +148,13 @@ entity tag. `/spawn_drones <count> <range> <speed>` accepts speeds of 1–5 bloc
 per second. The backend still owns route planning; the plugin never teleports
 drones to complete a move.
 
+Movement uses one collision-safe buffered next waypoint, eliminating the old
+arrival/report/acknowledgement stop at every block. Positions/results travel at
+up to 10 Hz while terrain sensing, knowledge relay and replay stay at 2 Hz on
+the same ordered retry-safe stream. Stops remain valid for obstacles, traffic,
+arrival/upload, unavailable next routes and network outages. Update the backend
+and plugin together; legacy clients retain single-command dispatch.
+
 Flight needs a real Paper server, not a mocked pathfinder. Build the optional
 regression-test plugin with `.\gradlew.bat flightTestJar` in `MC_Plugin`, install
 the `*-flight-tests.jar` alongside the production plugin on a **test server**,
@@ -141,6 +167,11 @@ the server console):
 /test_drone_flight horizontal 360 104 -128
 /test_drone_flight blocked 360 104 -128
 /test_drone_flight ceiling 360 104 -128
+/test_drone_flight queued-blocked 360 104 -128
+/test_drone_flight turn 360 104 -128
+/test_drone_speed 1 360 110 -128 queued
+/test_drone_speed 2 360 110 -128 queued
+/test_drone_speed 5 360 110 -128 queued
 ```
 
 Wait for each `FLIGHT_TEST ... PASS` before starting the next. Tests assert
@@ -149,6 +180,11 @@ of stationary hover, glow, an obstacle appearing after dispatch, and horizontal
 flight underneath a one-block ceiling. Each test removes its own bee and restores
 its temporary block, including on clean shutdown. Remove the test plugin and
 restart before normal use. These are separate from Gradle's JVM test task.
+The queued speed tests traverse eight adjacent waypoints, simulate 2-tick
+acknowledgements, require speed within 8% of the configured blocks/s, and reject
+stopped intermediate ticks. Omit `queued` to isolate physics with one long move.
+Queued blockage must cancel the successor and hover; `turn` checks a right-angle
+transition and retained ordered results.
 
 The same optional companion exposes `/test_mission_setup`, a read-only check
 of the live native command tree's count/range/speed completion and prefix
@@ -181,6 +217,9 @@ frame all height-visible discovered terrain, live positions of all scouts (inclu
 isolated scouts), and the actual target even before discovery. Overall view uses
 plugin telemetry for markers and follow mode without publishing it into the
 hive's knowledge.
+Live markers interpolate between received samples without predicting unseen
+movement. Labels, links and the follow camera share those positions; stale or
+faulted markers freeze, and unchanged terrain geometry is reused.
 Clicking a scout in overall view jumps to a close follow view while retaining
 the camera's viewing direction. Clicking it again refocuses; subsequent live
 updates preserve manual orbit and zoom.
@@ -198,10 +237,9 @@ Overall framing fits the visible terrain's projected edges with a small margin r
 an enclosing sphere. Floating tags shrink with distance as you zoom out.
 
 Drones use yellow cuboid outlines and floating, selectable ID tags; the taller
-hive is labelled `HIVE` and uses an orange hexagonal-prism outline, surrounded
-by orange radius-3 rings spaced 1.5 blocks apart vertically from -3 to +3.
-These rings are a visual range guide, not the exact communication boundary:
-communication still uses the obstacle-aware 7x7x7 cube.
+hive is labelled `HIVE` and uses an orange hexagonal-prism outline without range
+rings. Bright, screen-width orange hive links and yellow peer links remain
+visible over terrain. Communication still uses the obstacle-aware 7x7x7 cube.
 A drone's arrow indicates
 its last observed horizontal travel direction, not a telemetry-reported facing
 angle; it extends from the centre of the cuboid's front face, appears after
@@ -221,15 +259,38 @@ both the outlines and their occluding faces in all three views.
 
 **SCOUT VIEW** shows only the selected unit's accumulated solid-cell knowledge,
 its own last observed position and a target it actually knows about. Select
-another unit in the roster to switch maps. Peer locations are not present in the
-individual debug contract, so other unit markers are omitted rather than copied
-from the hive or overall map. Loading, unavailable, mismatched and old-mission
+another unit in the roster to switch maps. Other unit markers come only from
+that scout's independently retained peer sightings, including legitimate reports
+relayed by peers or the hive. Sightings retain their original observation tick
+and stale sightings stay faded, never replaced with live observer positions.
+Loading, unavailable, mismatched and old-mission
 responses never fall back to global terrain or the globally reported target.
+
+**CUTAWAY** toggles a vertical section through the selected scout (or hive).
+The camera-facing half of known terrain becomes invisible as you orbit, including
+its depth-occluding faces, revealing underground outlines on the far side.
+It works alongside the height filter and never reveals unobserved terrain.
+
+Header milestones show **TARGET FOUND**, **HIVE INFORMED**, and
+**ALL DRONES HOME / AT REST**. Finding alone does not count as reporting, and
+completion waits for all movement commands to finish.
+
+**REPLAY SEARCH** loads the server's full mission recording, even if the browser
+was closed during the search. Pause/play, scrub the timeline and choose 1x-16x.
+Minecraft continues running independently; **BACK TO LIVE** returns to current
+telemetry. Replay supports hive and overall views, not individual scout inspection.
+Recording ends at mission completion, survives reset/clear, and is replaced only
+when a new mission starts successfully (or lost on backend restart). Terrain
+history stores material changes rather than repeatedly copying whole maps; replay
+terrain source ticks indicate when that material first appeared in the recording.
+Read-only endpoints are `/api/public/replay` (mission ID and frame ticks) and
+`/api/public/replay/{missionId}/frames/{frame}` (zero-based snapshot).
 
 ## Surface-following exploration
 
 Movement dispatch reserves every scout's occupied block and each unfinished
-move destination. Scouts cannot be commanded into another occupied block,
+move destination, plus the active source and buffered destination for continuous
+flight. Scouts cannot be commanded into another occupied block,
 share a destination, or swap blocks in the same cycle. A conflicting move
 tries an alternative route through the scout's own known terrain; if traffic
 blocks all routes, it reports `waitingForClearance` and retries on later cycles
@@ -272,7 +333,7 @@ With the backend running and the same `PLUGIN_KEY` set in a second shell:
 node scripts\simulate.mjs --warmup 400
 ```
 
-The simulator supplies full protocol observation cubes for five scouts over
+The legacy single-command simulator supplies full protocol observation cubes for five scouts over
 rolling ground covering the 128x128 horizontal mission bounds. It executes the
 backend's commands, including surface following and upload trips; it does not
 reveal unexplored terrain. Warmup runs real observation/command cycles without
@@ -280,6 +341,10 @@ the usual delay to build a visible map, then telemetry continues every 500 ms.
 Use `--warmup 0` to watch from the beginning, `--url` for another backend
 address, or `--reset` to explicitly replace an existing mission. Stop the
 simulator with Ctrl+C. Restarting the backend clears the map.
+Use `--game skyrim` to run the same protocol simulator against the isolated
+Skyrim session while Minecraft remains active; this validates backend and
+dashboard session separation, not the in-game Skyrim mod. Add `--frames 5` for
+a bounded local smoke test; the default `--frames 0` runs continuously.
 
 ## Backend regression checks
 

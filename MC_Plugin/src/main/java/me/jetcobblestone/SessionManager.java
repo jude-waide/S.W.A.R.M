@@ -44,6 +44,9 @@ public class SessionManager {
     private long pendingSequence;
     private String pendingPath;
     private String pendingBody;
+    private long lastObservationTick;
+    private long pendingTick;
+    private boolean pendingObservation;
 
     public SessionManager(Main plugin, DroneManager droneManager, Location hive, Location target,
                           MissionBounds bounds, String baseUrl, String pluginKey) {
@@ -65,21 +68,23 @@ public class SessionManager {
 
         JsonObject request = new JsonObject();
         request.addProperty("protocolVersion", 1);
+        request.addProperty("continuousFlight", true);
         request.addProperty("missionId", missionId);
         request.addProperty("worldId", world.getName() + ":"
                 + world.getEnvironment().name().toLowerCase(Locale.ROOT));
         request.add("boundsMin", bounds.toJson());
         request.add("tower", blockPoint(hive));
         request.add("target", blockPoint(target));
-        request.add("initialFrame", createFrame(0));
+        request.add("initialFrame", createFrame(0, true));
+        lastObservationTick = pendingTick;
         pendingPath = "/api/plugin/missions";
         pendingSequence = 0;
         pendingBody = gson.toJson(request);
-        pollingTask = Bukkit.getScheduler().runTaskTimer(plugin, this::postObservation, 10L, 10L);
+        pollingTask = Bukkit.getScheduler().runTaskTimer(plugin, this::postObservation, 2L, 2L);
         sendPending();
     }
 
-    /** Called on the main thread every 10 ticks after mission initialisation. */
+    /** One ordered request stream; terrain sensing runs at one fifth the motion cadence. */
     public void postObservation() {
         if (stopped || inFlight.get()) {
             return;
@@ -89,8 +94,9 @@ public class SessionManager {
                 return;
             }
             pendingSequence = lastAcceptedSequence + 1;
-            pendingPath = "/api/plugin/missions/" + missionId + "/observations";
-            pendingBody = gson.toJson(createFrame(pendingSequence));
+            pendingObservation = Bukkit.getCurrentTick() - lastObservationTick >= 10;
+            pendingPath = "/api/plugin/missions/" + missionId + (pendingObservation ? "/observations" : "/telemetry");
+            pendingBody = gson.toJson(createFrame(pendingSequence, pendingObservation));
         }
         sendPending();
     }
@@ -108,6 +114,10 @@ public class SessionManager {
     }
 
     public boolean resetMission() {
+        return resetMission(() -> {});
+    }
+
+    public boolean resetMission(Runnable onReset) {
         if (initializing) {
             plugin.getLogger().warning("Wait for mission initialisation before requesting a reset.");
             return false;
@@ -143,12 +153,14 @@ public class SessionManager {
                             droneManager.resetAll();
                             plugin.setSessionManager(null);
                             plugin.getLogger().info("Mission " + missionId + " reset.");
+                            onReset.run();
                         } else if (response.statusCode() == 404) {
                             resetFailed = false;
                             droneManager.resetAll();
                             plugin.setSessionManager(null);
                             plugin.getLogger().warning("Backend no longer has mission " + missionId
                                     + " (404); local drone state was reset.");
+                            onReset.run();
                         } else {
                             resetFailed = true;
                             plugin.getLogger().severe("Mission reset returned " + response.statusCode()
@@ -159,11 +171,12 @@ public class SessionManager {
         return true;
     }
 
-    private JsonObject createFrame(long sequence) {
+    private JsonObject createFrame(long sequence, boolean includeCells) {
         JsonObject frame = new JsonObject();
+        pendingTick = Bukkit.getCurrentTick();
         frame.addProperty("sequence", sequence);
-        frame.addProperty("gameTick", Bukkit.getCurrentTick());
-        frame.add("drones", droneManager.getInfo(bounds, world));
+        frame.addProperty("gameTick", pendingTick);
+        frame.add("drones", droneManager.getInfo(bounds, world, includeCells));
         return frame;
     }
 
@@ -250,17 +263,19 @@ public class SessionManager {
         }
 
         lastAcceptedSequence = sentSequence;
+        if (pendingObservation) lastObservationTick = pendingTick;
         pendingBody = null;
         pendingPath = null;
         if (sentInitialization) {
             initializing = false;
-            plugin.getLogger().info("Mission " + missionId + " accepted; sending observations every 10 ticks.");
+            plugin.getLogger().info("Mission " + missionId + " accepted; motion every 2 ticks, observations every 10 ticks.");
         }
     }
 
     private void fail(String message) {
         plugin.getLogger().severe(message);
         stop();
+        initializing = false;
         pendingBody = null;
     }
 }

@@ -3,43 +3,57 @@ using Microsoft.AspNetCore.SignalR;
 
 namespace DroneSwarm.Web;
 
-public sealed class MissionHub(MissionService missions) : Hub
+public sealed class MissionHub(GameSessionRegistry sessions) : Hub
 {
-    private static readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> Subscribers = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<(string Game, string Drone), ConcurrentDictionary<string, byte>> Subscribers = new();
 
-    public static IEnumerable<string> SubscribedDroneIds => Subscribers.Keys;
+    private string Game => sessions.NormalizeGameId(
+        Context.GetHttpContext()?.Request.RouteValues["game"]?.ToString() ?? GameSessionRegistry.Minecraft);
 
     public async Task SubscribeDrone(string droneId)
     {
-        var debug = missions.GetDroneDebug(droneId);
-        await Groups.AddToGroupAsync(Context.ConnectionId, DroneGroup(droneId));
-        Subscribers.GetOrAdd(droneId, _ => new(StringComparer.Ordinal))[Context.ConnectionId] = 0;
+        var game = Game;
+        var debug = sessions.GetMissionService(game).GetDroneDebug(droneId);
+        await Groups.AddToGroupAsync(Context.ConnectionId, DroneGroup(game, droneId));
+        Subscribers.GetOrAdd((game, droneId), _ => new(StringComparer.Ordinal))[Context.ConnectionId] = 0;
         await Clients.Caller.SendAsync("droneDebugUpdated", debug);
     }
 
     public async Task UnsubscribeDrone(string droneId)
     {
-        await Groups.RemoveFromGroupAsync(Context.ConnectionId, DroneGroup(droneId));
-        RemoveSubscriber(droneId, Context.ConnectionId);
+        var game = Game;
+        await Groups.RemoveFromGroupAsync(Context.ConnectionId, DroneGroup(game, droneId));
+        RemoveSubscriber(game, droneId, Context.ConnectionId);
     }
 
     public Task RequestSnapshot() =>
-        Clients.Caller.SendAsync("missionUpdated", missions.GetSnapshot());
+        Clients.Caller.SendAsync("missionUpdated", sessions.GetMissionService(Game).GetSnapshot());
+
+    public override async Task OnConnectedAsync()
+    {
+        await Groups.AddToGroupAsync(Context.ConnectionId, GameGroup(Game));
+        await base.OnConnectedAsync();
+    }
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        foreach (var droneId in Subscribers.Keys)
-            RemoveSubscriber(droneId, Context.ConnectionId);
+        foreach (var (game, droneId) in Subscribers.Keys)
+            RemoveSubscriber(game, droneId, Context.ConnectionId);
         await base.OnDisconnectedAsync(exception);
     }
 
-    internal static string DroneGroup(string droneId) => $"drone:{droneId}";
+    internal static string GameGroup(string game) => $"game:{game}";
+    internal static string DroneGroup(string game, string droneId) => $"{GameGroup(game)}:drone:{droneId}";
 
-    private static void RemoveSubscriber(string droneId, string connectionId)
+    internal static IEnumerable<string> SubscribedDroneIds(string game) =>
+        Subscribers.Keys.Where(key => key.Game == game).Select(key => key.Drone);
+
+    private static void RemoveSubscriber(string game, string droneId, string connectionId)
     {
-        if (!Subscribers.TryGetValue(droneId, out var connections)) return;
+        var key = (game, droneId);
+        if (!Subscribers.TryGetValue(key, out var connections)) return;
         connections.TryRemove(connectionId, out _);
         if (connections.IsEmpty)
-            Subscribers.TryRemove(new KeyValuePair<string, ConcurrentDictionary<string, byte>>(droneId, connections));
+            Subscribers.TryRemove(new KeyValuePair<(string Game, string Drone), ConcurrentDictionary<string, byte>>(key, connections));
     }
 }

@@ -7,13 +7,20 @@ const { values } = parseArgs({
     url: { type: "string", default: "http://127.0.0.1:5000" },
     warmup: { type: "string", default: "400" },
     reset: { type: "boolean", default: false },
+    game: { type: "string", default: "minecraft" },
+    frames: { type: "string", default: "0" },
   },
 });
 const warmup = Number(values.warmup);
+const frames = Number(values.frames);
 assert(Number.isSafeInteger(warmup) && warmup >= 0, "--warmup must be a non-negative integer.");
+assert(Number.isSafeInteger(frames) && frames >= 0, "--frames must be a non-negative integer.");
+assert(["minecraft", "skyrim"].includes(values.game), "--game must be minecraft or skyrim.");
 const pluginKey = process.env.PLUGIN_KEY;
 assert(pluginKey, "Set PLUGIN_KEY to the same key used by the backend.");
 const baseUrl = values.url.replace(/\/$/, "");
+const pluginPath = values.game === "minecraft" ? "/api/plugin" : `/api/plugin/${values.game}`;
+const publicPath = `/api/public/${values.game}`;
 const missionId = randomUUID();
 const boundsMin = { x: -64, y: 0, z: -64 };
 const tower = { x: 0, y: 20, z: 0 };
@@ -64,12 +71,12 @@ async function request(path, method = "GET", body) {
 }
 
 async function main() {
-  const status = await request("/api/plugin/status");
+  const status = await request(`${pluginPath}/status`);
   if (status.activeMissionId) {
     assert(values.reset, "An active mission exists. Use --reset to explicitly replace it.");
-    await request(`/api/plugin/missions/${status.activeMissionId}`, "DELETE");
+    await request(`${pluginPath}/missions/${status.activeMissionId}`, "DELETE");
   }
-  await request("/api/plugin/missions", "POST", {
+  await request(`${pluginPath}/missions`, "POST", {
     protocolVersion: 1,
     missionId,
     worldId: "rolling-ground-demo:overworld",
@@ -78,10 +85,10 @@ async function main() {
     target: { x: 56, y: surfaceY(56, 56) + 1, z: 56 },
     initialFrame: frame(0),
   });
-  console.log(`Mission ${missionId}: five surface-following scouts over a 128x128 rolling landscape.`);
-  console.log(`Warming up ${warmup} observation frames, then continuing at two frames per second.`);
+  console.log(`${values.game.toUpperCase()} mission ${missionId}: five surface-following scouts over a 128x128 rolling landscape.`);
+  console.log(`Warming up ${warmup} observation frames${frames ? `, then running ${frames} frames total.` : ", then continuing at two frames per second."}`);
 
-  for (let sequence = 1; ; sequence++) {
+  for (let sequence = 1; frames === 0 || sequence <= frames; sequence++) {
     if (sequence > warmup) await new Promise((resolve) => setTimeout(resolve, 500));
     for (const drone of drones) {
       drone.result = null;
@@ -99,7 +106,7 @@ async function main() {
       drone.result = { commandId, status: "completed", reason: null };
     }
 
-    const accepted = await request(`/api/plugin/missions/${missionId}/observations`, "POST", frame(sequence));
+    const accepted = await request(`${pluginPath}/missions/${missionId}/observations`, "POST", frame(sequence));
     const occupied = new Set(drones.map(({ position }) =>
       `${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`));
     const reserved = new Set();
@@ -117,12 +124,13 @@ async function main() {
       drone.pending = accepted.commands.find((command) => command.droneId === drone.id) ?? null;
     }
     if (sequence % 25 === 0 || sequence === warmup) {
-      const snapshot = await request("/api/public/snapshot");
+      const snapshot = await request(`${publicPath}/snapshot`);
       const returning = snapshot.drones.filter((drone) => drone.behavior === "returningToUpload").length;
       const columns = new Set(snapshot.terrain.map((cell) => `${cell.x},${cell.z}`)).size;
       console.log(`frame=${sequence} phase=${snapshot.phase} sharedSolids=${snapshot.terrain.length} groundColumns=${columns} uploading=${returning}`);
     }
   }
+  console.log(`Completed ${frames} ${values.game} test frames.`);
 }
 
 main().catch((error) => {

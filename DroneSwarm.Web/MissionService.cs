@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Numerics;
 
 namespace DroneSwarm.Web;
 
@@ -13,6 +14,7 @@ public sealed class MissionService
     private readonly HashSet<string> _retiredMissionIds = new(StringComparer.Ordinal);
     private Mission? _mission;
     private string? _lastResetMissionId;
+    private MissionReplay? _replay;
 
     public PluginStatus GetPluginStatus()
     {
@@ -40,12 +42,6 @@ public sealed class MissionService
             var mission = new Mission(request, requestHash);
             var initialStates = request.InitialFrame.Drones
                 .ToDictionary(item => item.DroneId, StringComparer.Ordinal);
-            var initialSolids = initialStates.Values
-                .SelectMany(item => item.Cells)
-                .Where(cell => cell.Solid)
-                .Select(ToBlock)
-                .ToHashSet();
-
             foreach (var drone in mission.Drones.Values)
             {
                 var telemetry = initialStates[drone.Id];
@@ -54,14 +50,14 @@ public sealed class MissionService
                 drone.LastSeenTick = request.InitialFrame.GameTick;
                 drone.LastSeenAt = Stopwatch.GetTimestamp();
                 drone.LastContactTick = request.InitialFrame.GameTick;
-                drone.DirectlyConnectedToTower = true;
-                drone.ConnectedToTower = true;
                 drone.KnownCells = telemetry.Cells.ToDictionary(
                     ToBlock, cell => new KnownCell(cell.Solid, request.InitialFrame.GameTick));
+                drone.KnownSolids.UnionWith(telemetry.Cells.Where(cell => cell.Solid).Select(ToBlock));
+                drone.ChangedCells.UnionWith(drone.KnownCells.Keys);
+                foreach (var cell in telemetry.Cells)
+                    MergeCell(mission.ObservedCells, ToBlock(cell), new(cell.Solid, request.InitialFrame.GameTick));
                 mission.TowerPeerPositions[drone.Id] =
                     new(Block.Floor(position), CopyPosition(position), request.InitialFrame.GameTick);
-                if (!CanCommunicate(Block.From(request.Tower), Block.Floor(position), initialSolids))
-                    throw new ProtocolException(400, "initial_link_required", $"Drone '{drone.Id}' must have a clear direct link to the tower at mission start.");
             }
 
             mission.LastSequence = 0;
@@ -82,15 +78,20 @@ public sealed class MissionService
             }
             _mission = mission;
             _lastResetMissionId = null;
+            _replay = new MissionReplay(mission.Id);
+            _replay.Record(GetSnapshot());
             return mission.LastResponse;
         }
     }
 
-    public AcceptedFrameResponse AcceptFrame(string missionId, ObservationFrame frame, string requestHash)
+    public AcceptedFrameResponse AcceptFrame(string missionId, ObservationFrame frame, string requestHash, bool motionOnly = false)
     {
         lock (_gate)
         {
             var mission = RequireMission(missionId);
+            if (motionOnly && !mission.ContinuousFlight)
+                throw new ProtocolException(400, "motion_not_enabled", "This mission did not enable continuous flight.");
+            requestHash = (motionOnly ? "motion:" : "observations:") + requestHash;
             if (frame.Sequence == mission.LastSequence)
             {
                 if (mission.LastFrameHash == requestHash)
@@ -102,7 +103,12 @@ public sealed class MissionService
             if (frame.GameTick < mission.LastGameTick)
                 throw new ProtocolException(400, "tick_decreased", "Game ticks must not decrease within a mission.");
 
-            ValidateFrame(mission, frame);
+            ValidateFrame(mission, frame, motionOnly);
+            if (!motionOnly)
+            {
+                mission.HiveTerrainCache = null;
+                mission.ObservedTerrainCache = null;
+            }
             var previousTick = mission.LastGameTick;
             var wasFresh = IsFresh(mission);
             var telemetryById = frame.Drones.ToDictionary(item => item.DroneId, StringComparer.Ordinal);
@@ -123,7 +129,12 @@ public sealed class MissionService
                 drone.LastSeenTick = frame.GameTick;
                 drone.LastSeenAt = Stopwatch.GetTimestamp();
                 foreach (var observation in telemetry.Cells)
-                    MergeCell(drone.KnownCells, ToBlock(observation), observation.Solid, frame.GameTick);
+                {
+                    var coordinate = ToBlock(observation);
+                    var cell = new KnownCell(observation.Solid, frame.GameTick);
+                    MergeCell(drone.KnownCells, coordinate, cell, drone.KnownSolids, drone.ChangedCells);
+                    MergeCell(mission.ObservedCells, coordinate, cell);
+                }
 
                 if (telemetry.CommandResult is { } result)
                 {
@@ -143,9 +154,22 @@ public sealed class MissionService
                         drone.Faulted = true;
                     else if (result.Status == "blocked")
                         drone.BlockedMoves[(drone.OutstandingSource!.Value, drone.OutstandingDestination!.Value)] = frame.GameTick;
+                    if (result.Status != "completed")
+                        drone.PendingFrontierObservation = null;
                     drone.OutstandingDestination = null;
                     drone.OutstandingSource = null;
                     drone.OutstandingSinceTick = null;
+                    if (result.Status == "completed" && drone.NextMove is { } next)
+                    {
+                        drone.OutstandingCommand = next.Command;
+                        drone.OutstandingSource = next.Source;
+                        drone.OutstandingDestination = Block.From(next.Command.Destination);
+                        drone.OutstandingSinceTick = frame.GameTick;
+                        drone.OutstandingExploration = next.Exploration;
+                        drone.OutstandingPeerSearch = next.PeerSearch;
+                        drone.OutstandingRendezvousSearch = next.RendezvousSearch;
+                    }
+                    drone.NextMove = null;
                 }
             }
 
@@ -157,11 +181,13 @@ public sealed class MissionService
                 RebaseBehaviorTimers(mission, frame.GameTick - previousTick);
                 mission.LastDecisionTick = frame.GameTick;
             }
-            else if (frame.GameTick > previousTick && frame.GameTick - mission.LastDecisionTick >= 10)
+            else if (!motionOnly && frame.GameTick - mission.LastDecisionTick >= 10)
             {
                 mission.LastDecisionTick = frame.GameTick;
                 RunDecisionCycle(mission);
             }
+            if (motionOnly && acknowledged.Count > 0)
+                PlanMoves(mission);
 
             mission.Version++;
             mission.LastFrameHash = requestHash;
@@ -174,8 +200,11 @@ public sealed class MissionService
                 mission.Drones.Values
                     .Where(drone => drone.OutstandingCommand is not null)
                     .OrderBy(drone => drone.Id, StringComparer.Ordinal)
-                    .Select(drone => drone.OutstandingCommand!)
+                    .SelectMany(drone => drone.NextMove is { } next
+                        ? new[] { drone.OutstandingCommand!, next.Command }
+                        : new[] { drone.OutstandingCommand! })
                     .ToArray());
+            if (!motionOnly) _replay!.Record(GetSnapshot());
             return mission.LastResponse;
         }
     }
@@ -204,13 +233,10 @@ public sealed class MissionService
         lock (_gate)
         {
             if (_mission is null)
-                return new(1, null, 0, "awaitingMission", "disconnected", null, null, false, null, [], [], 0, [], null, [], null);
+                return new(1, null, 0, "awaitingMission", "disconnected", null, null, false, null, [], [], 0, [], null, [], null, false);
 
             var mission = _mission;
             var connected = IsFresh(mission);
-            var liveCells = new Dictionary<Block, KnownCell>(mission.TowerCells);
-            foreach (var drone in mission.Drones.Values)
-                MergeCells(liveCells, drone.KnownCells);
             return new(
                 1,
                 mission.Id,
@@ -221,7 +247,7 @@ public sealed class MissionService
                 mission.Tower.ToPoint(),
                 mission.TargetReported,
                 mission.TargetReported ? mission.Target.ToPoint() : null,
-                ToPublicTerrain(mission.TowerCells),
+                mission.HiveTerrainCache ??= ToPublicTerrain(mission.TowerCells),
                 mission.Drones.Values
                     .OrderBy(drone => drone.Id, StringComparer.Ordinal)
                     .Select(drone => ToPublicDrone(mission, drone, connected))
@@ -234,8 +260,40 @@ public sealed class MissionService
                     .Order(StringComparer.Ordinal)
                     .ToArray(),
                 mission.LastGameTick,
-                ToPublicTerrain(liveCells),
-                mission.Target.ToPoint());
+                mission.ObservedTerrainCache ??= ToPublicTerrain(mission.ObservedCells),
+                mission.Target.ToPoint(),
+                mission.Drones.Values.Any(drone => drone.TargetKnown));
+        }
+    }
+
+    public ReplayIndex GetReplayIndex()
+    {
+        lock (_gate)
+            return _replay?.GetIndex() ?? new(null, []);
+    }
+
+    public MotionSnapshot GetMotionSnapshot()
+    {
+        lock (_gate)
+        {
+            var mission = _mission ?? throw new ProtocolException(404, "mission_not_found", "There is no active mission.");
+            var fresh = IsFresh(mission);
+            return new(mission.Id, mission.Version, mission.LastGameTick,
+                mission.Drones.Values.OrderBy(drone => drone.Id, StringComparer.Ordinal)
+                    .Select(drone => new LiveDrone(drone.Id,
+                        drone.Position is null ? null : CopyPosition(drone.Position),
+                        fresh && !drone.Faulted && drone.LastSeenTick == mission.LastGameTick,
+                        drone.Faulted)).ToArray());
+        }
+    }
+
+    public PublicSnapshot GetReplayFrame(string missionId, int frame)
+    {
+        lock (_gate)
+        {
+            if (_replay is null || _replay.MissionId != missionId)
+                throw new ProtocolException(404, "replay_not_found", "No replay matches this mission.");
+            return _replay.GetFrame(frame);
         }
     }
 
@@ -269,7 +327,12 @@ public sealed class MissionService
                     .Select(pair => new DebugCell(pair.Key.X, pair.Key.Y, pair.Key.Z, pair.Value.Solid, pair.Value.SourceTick))
                     .ToArray(),
                 drone.TargetKnown ? mission.Target.ToPoint() : null,
-                drone.FrontierMovesSinceUpload);
+                drone.FrontierMovesSinceUpload,
+                drone.PeerPositions
+                    .Where(pair => pair.Key != drone.Id)
+                    .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                    .Select(pair => new PeerSighting(pair.Key, CopyPosition(pair.Value.Position), pair.Value.SourceTick))
+                    .ToArray());
         }
     }
 
@@ -284,7 +347,8 @@ public sealed class MissionService
             hasKnownPosition ? CopyPosition(knownPosition.Position) : null,
             drone.ConnectedToTower,
             drone.DirectlyConnectedToTower,
-            fresh && drone.ConnectedToTower && hasKnownPosition && knownPosition.SourceTick == mission.LastGameTick,
+            fresh && drone.ConnectedToTower && hasKnownPosition &&
+                knownPosition.SourceTick == mission.LastKnowledgeTick && mission.LastGameTick - mission.LastKnowledgeTick <= 20,
             drone.Faulted,
             Behavior(mission, drone),
             drone.KnownCells.Count,
@@ -368,13 +432,13 @@ public sealed class MissionService
             throw new ProtocolException(400, "invalid_initial_tick", "Initial telemetry must use one non-negative game tick.");
     }
 
-    private static void ValidateFrame(Mission mission, ObservationFrame frame)
+    private static void ValidateFrame(Mission mission, ObservationFrame frame, bool motionOnly)
     {
         if (frame.Drones is null)
             throw new ProtocolException(400, "invalid_roster", "Drone telemetry must be an array.");
         if (frame.GameTick < 0)
             throw new ProtocolException(400, "invalid_tick", "Game tick must be non-negative.");
-        ValidateFrameContents(frame, mission.BoundsMin, mission.Drones.Keys.ToHashSet(StringComparer.Ordinal), false);
+        ValidateFrameContents(frame, mission.BoundsMin, mission.Drones.Keys.ToHashSet(StringComparer.Ordinal), false, motionOnly);
         foreach (var telemetry in frame.Drones)
         {
             var drone = mission.Drones[telemetry.DroneId];
@@ -416,7 +480,8 @@ public sealed class MissionService
         ObservationFrame frame,
         Block boundsMin,
         HashSet<string> roster,
-        bool initialization)
+        bool initialization,
+        bool motionOnly = false)
     {
         if (frame.Drones is null)
             throw new ProtocolException(400, "invalid_roster", "Drone telemetry must be an array.");
@@ -448,6 +513,12 @@ public sealed class MissionService
             var block = Block.Floor(telemetry.Position);
             if (!IsInBounds(block, boundsMin))
                 throw new ProtocolException(400, "outside_bounds", $"Drone '{telemetry.DroneId}' is outside the exploration bounds.");
+            if (motionOnly)
+            {
+                if (telemetry.Cells.Count != 0)
+                    throw new ProtocolException(400, "unexpected_cells", "Motion telemetry must not include terrain cells.");
+                continue;
+            }
 
             var expected = new HashSet<Block>();
             for (var x = Math.Max(boundsMin.X, block.X - 3); x <= Math.Min(boundsMin.X + Width - 1, block.X + 3); x++)
@@ -471,22 +542,17 @@ public sealed class MissionService
 
     private static void RunDecisionCycle(Mission mission)
     {
+        mission.LastKnowledgeTick = mission.LastGameTick;
         foreach (var drone in mission.Drones.Values)
         {
             if (drone.Position is null || drone.Faulted) continue;
             MarkVisibleCells(drone, mission.LastGameTick);
+            if (drone.PendingFrontierObservation == Block.Floor(drone.Position))
+                drone.PendingFrontierObservation = null;
             if (!drone.TargetKnown && CanSeeTarget(mission, drone))
                 drone.TargetKnown = true;
         }
 
-        var oldDroneCells = mission.Drones.ToDictionary(
-            pair => pair.Key,
-            pair => new Dictionary<Block, KnownCell>(pair.Value.KnownCells),
-            StringComparer.Ordinal);
-        var oldDroneSearch = mission.Drones.ToDictionary(
-            pair => pair.Key,
-            pair => new HashSet<Block>(pair.Value.SearchedCells),
-            StringComparer.Ordinal);
         var oldTargetKnowledge = mission.Drones.ToDictionary(pair => pair.Key, pair => pair.Value.TargetKnown, StringComparer.Ordinal);
         var oldRecallKnowledge = mission.Drones.ToDictionary(pair => pair.Key, pair => pair.Value.RecallKnown, StringComparer.Ordinal);
         var oldPeerPositions = mission.Drones.ToDictionary(
@@ -497,9 +563,8 @@ public sealed class MissionService
             pair => pair.Key,
             pair => new Dictionary<string, RecoveryAssignment>(pair.Value.KnownRescueAssignments, StringComparer.Ordinal),
             StringComparer.Ordinal);
-        var oldTowerCells = new Dictionary<Block, KnownCell>(mission.TowerCells);
-        var oldTowerSearch = new HashSet<Block>(mission.TowerSearchedCells);
         var oldTowerTarget = mission.TargetReported;
+        var oldTowerPeerPositions = new Dictionary<string, PeerPosition>(mission.TowerPeerPositions, StringComparer.Ordinal);
         var oldTowerRecall = mission.RecallIssued;
         var oldTowerAssignments = new Dictionary<string, RecoveryAssignment>(mission.TowerAssignments, StringComparer.Ordinal);
         var oldPeers = mission.Drones.ToDictionary(
@@ -508,14 +573,14 @@ public sealed class MissionService
             StringComparer.Ordinal);
 
         UpdateLinks(mission);
+        ExchangeTerrainKnowledge(mission);
         foreach (var drone in mission.Drones.Values)
         {
             if (drone.DirectlyConnectedToTower)
             {
-                MergeCells(drone.KnownCells, oldTowerCells);
-                drone.SearchedCells.UnionWith(oldTowerSearch);
-                MergeCells(mission.TowerCells, oldDroneCells[drone.Id]);
-                mission.TowerSearchedCells.UnionWith(oldDroneSearch[drone.Id]);
+                foreach (var sighting in oldTowerPeerPositions)
+                    if (sighting.Key != drone.Id)
+                        MergePeerPosition(drone.PeerPositions, sighting.Key, sighting.Value);
                 mission.TowerPeerPositions[drone.Id] =
                     new(Block.Floor(drone.Position!), CopyPosition(drone.Position!), mission.LastGameTick);
                 foreach (var sighting in oldPeerPositions[drone.Id])
@@ -534,12 +599,11 @@ public sealed class MissionService
         foreach (var peerId in pair.ConnectedPeers)
         {
             var peer = mission.Drones[peerId];
-            MergeCells(pair.KnownCells, oldDroneCells[peerId]);
-            pair.SearchedCells.UnionWith(oldDroneSearch[peerId]);
             pair.TargetKnown |= oldTargetKnowledge[peerId];
             pair.RecallKnown |= oldRecallKnowledge[peerId];
             foreach (var sighting in oldPeerPositions[peerId])
-                MergePeerPosition(pair.PeerPositions, sighting.Key, sighting.Value);
+                if (sighting.Key != pair.Id)
+                    MergePeerPosition(pair.PeerPositions, sighting.Key, sighting.Value);
             foreach (var assignment in oldKnownRescueAssignments[peerId])
                 pair.KnownRescueAssignments.TryAdd(assignment.Key, assignment.Value);
         }
@@ -597,8 +661,9 @@ public sealed class MissionService
         {
             mission.Phase = "recovering";
             foreach (var drone in mission.Drones.Values.Where(drone => drone.Position is not null))
-                drone.Recovered = IsInTowerNeighbourhood(mission, Block.Floor(drone.Position!)) &&
-                    CanCommunicate(mission.Tower, Block.Floor(drone.Position!), SolidCells(drone.KnownCells, mission.TowerCells));
+                drone.Recovered = drone.OutstandingCommand is null &&
+                    IsInTowerNeighbourhood(mission, Block.Floor(drone.Position!)) &&
+                    CanCommunicate(mission.Tower, Block.Floor(drone.Position!), drone.KnownCells, mission.TowerCells);
             if (mission.Drones.Values.All(drone => drone.Recovered && !drone.Faulted))
                 mission.Phase = "complete";
             else
@@ -614,6 +679,133 @@ public sealed class MissionService
         UpdateRendezvous(mission);
         PlanMoves(mission);
     }
+
+    private static void ExchangeTerrainKnowledge(Mission mission)
+    {
+        var drones = mission.Drones.Values.ToArray();
+        var words = (drones.Length + 1 + 63) / 64;
+        var indices = drones.Select((drone, index) => (drone.Id, Index: index + 1))
+            .ToDictionary(item => item.Id, item => item.Index, StringComparer.Ordinal);
+        var sources = new[] { new TerrainSource(mission.TowerCells, mission.TowerSearchedCells,
+            mission.TowerChangedCells, mission.TowerChangedSearchedCells, mission.TowerTerrainRecipients, null) }
+            .Concat(drones.Select(drone => new TerrainSource(drone.KnownCells, drone.SearchedCells,
+                drone.ChangedCells, drone.ChangedSearchedCells, drone.TerrainRecipients, drone.KnownSolids))).ToArray();
+        var recipients = sources.Select(_ => new HashSet<int>()).ToArray();
+        for (var index = 0; index < drones.Length; index++)
+        {
+            if (drones[index].DirectlyConnectedToTower)
+            {
+                recipients[0].Add(index + 1);
+                recipients[index + 1].Add(0);
+            }
+            foreach (var peerId in drones[index].ConnectedPeers)
+                recipients[index + 1].Add(indices[peerId]);
+        }
+        var allowedCells = sources.Select(_ => new ulong[words]).ToArray();
+        var allowedSearched = sources.Select(_ => new ulong[words]).ToArray();
+        var allowedChanges = sources.Select(_ => new ulong[words]).ToArray();
+        var partialCellChanges = sources.Any(source =>
+            source.ChangedCells.Count > 0 && source.ChangedCells.Count < source.Cells.Count);
+        var partialSearchedChanges = sources.Any(source =>
+            source.ChangedSearched.Count > 0 && source.ChangedSearched.Count < source.Searched.Count);
+        var full = sources.Select((source, index) =>
+            recipients[index].Any(recipient => !source.Recipients.Contains(recipient))).ToArray();
+        var cells = new Dictionary<Block, CellRelay>(sources.Select((source, index) =>
+            recipients[index].Count == 0 ? 0 : full[index] ? source.Cells.Count : source.ChangedCells.Count).Max());
+
+        // Freeze source deltas before transfers; received changes relay on the next cycle.
+        for (var index = 0; index < sources.Length; index++)
+        {
+            var source = sources[index];
+            var allCellsChanged = source.ChangedCells.Count == source.Cells.Count;
+            var allSearchedChanged = source.ChangedSearched.Count == source.Searched.Count;
+            foreach (var recipient in recipients[index])
+            {
+                SetOwner(allowedChanges[recipient], index);
+                var newContact = !source.Recipients.Contains(recipient);
+                if (newContact || allCellsChanged) SetOwner(allowedCells[recipient], index);
+                if (newContact || allSearchedChanged) SetOwner(allowedSearched[recipient], index);
+            }
+            if (recipients[index].Count > 0) Capture(source, index, full[index], allCellsChanged, allSearchedChanged);
+            source.ChangedCells.Clear();
+            source.ChangedSearched.Clear();
+            source.Recipients.Clear();
+            source.Recipients.UnionWith(recipients[index]);
+        }
+        foreach (var relay in cells.Values)
+            if (relay.Versions.Count > 1)
+                relay.Versions.Sort(static (first, second) => second.Cell.SourceTick.CompareTo(first.Cell.SourceTick));
+        for (var index = 0; index < sources.Length; index++) Transfer(sources[index], index);
+
+        void Capture(TerrainSource source, int owner, bool entireMap, bool allCellsChanged, bool allSearchedChanged)
+        {
+            var observations = entireMap ? source.Cells :
+                source.ChangedCells.Select(block => new KeyValuePair<Block, KnownCell>(block, source.Cells[block]));
+            foreach (var (block, cell) in observations)
+            {
+                if (!cells.TryGetValue(block, out var relay))
+                    cells[block] = relay = new(words);
+                CellVersion? version = null;
+                foreach (var candidate in relay.Versions)
+                    if (candidate.Cell.SourceTick == cell.SourceTick && candidate.Cell.Solid == cell.Solid)
+                    {
+                        version = candidate;
+                        break;
+                    }
+                if (version is null)
+                {
+                    version = new(cell, words);
+                    relay.Versions.Add(version);
+                }
+                version.Owners.Add(owner);
+                if (!allCellsChanged && (!entireMap || source.ChangedCells.Contains(block)))
+                    version.ChangedOwners.Add(owner);
+            }
+            foreach (var block in entireMap ? source.Searched : source.ChangedSearched)
+            {
+                if (!cells.TryGetValue(block, out var relay))
+                    cells[block] = relay = new(words);
+                relay.SearchedOwners.Add(owner);
+                if (!allSearchedChanged && (!entireMap || source.ChangedSearched.Contains(block)))
+                    relay.ChangedSearchedOwners.Add(owner);
+            }
+        }
+
+        void Transfer(TerrainSource destination, int recipient)
+        {
+            if (allowedChanges[recipient].All(word => word == 0)) return;
+            foreach (var (block, relay) in cells)
+            {
+                KnownCell? newest = null;
+                CellVersion? newestVersion = null;
+                var newestOwner = -1;
+                foreach (var version in relay.Versions)
+                {
+                    if (newest is not null && version.Cell.SourceTick < newest.SourceTick) break;
+                    var owner = version.Owners.HighestAllowed(allowedCells[recipient]);
+                    if (partialCellChanges)
+                        owner = Math.Max(owner, version.ChangedOwners.HighestAllowed(allowedChanges[recipient]));
+                    if (owner >= 0 && (newest is null || version.Cell.SourceTick > newest.SourceTick ||
+                        (version.Cell.SourceTick == newest.SourceTick && owner > newestOwner)))
+                    {
+                        newest = version.Cell;
+                        newestVersion = version;
+                        newestOwner = owner;
+                    }
+                }
+                if (newest is not null && newestVersion is not null && !newestVersion.Owners.Contains(recipient))
+                    MergeCell(destination.Cells, block, newest, destination.Solids, destination.ChangedCells);
+                if (!relay.SearchedOwners.Contains(recipient) &&
+                    (relay.SearchedOwners.HighestAllowed(allowedSearched[recipient]) >= 0 ||
+                        (partialSearchedChanges &&
+                            relay.ChangedSearchedOwners.HighestAllowed(allowedChanges[recipient]) >= 0)) &&
+                    destination.Searched.Add(block))
+                    destination.ChangedSearched.Add(block);
+            }
+        }
+    }
+
+    private static void SetOwner(ulong[] owners, int index) => owners[index / 64] |= 1UL << (index % 64);
 
     private static void DeferUploadsOnEncounters(Mission mission, Dictionary<string, HashSet<string>> oldPeers)
     {
@@ -660,7 +852,7 @@ public sealed class MissionService
             drone.ConnectedPeers.Clear();
             drone.DirectlyConnectedToTower = drone.Position is not null && !drone.Faulted &&
                 IsInTowerNeighbourhood(mission, Block.Floor(drone.Position)) &&
-                CanCommunicate(mission.Tower, Block.Floor(drone.Position), SolidCells(drone.KnownCells, mission.TowerCells));
+                CanCommunicate(mission.Tower, Block.Floor(drone.Position), drone.KnownCells, mission.TowerCells);
         }
         var active = mission.Drones.Values.Where(drone => drone.Position is not null && !drone.Faulted).ToArray();
         for (var i = 0; i < active.Length; i++)
@@ -669,7 +861,7 @@ public sealed class MissionService
             var a = Block.Floor(active[i].Position!);
             var b = Block.Floor(active[j].Position!);
             if (!WithinCube(a, b) ||
-                !CanCommunicate(a, b, SolidCells(active[i].KnownCells, active[j].KnownCells))) continue;
+                !CanCommunicate(a, b, active[i].KnownCells, active[j].KnownCells)) continue;
             active[i].ConnectedPeers.Add(active[j].Id);
             active[j].ConnectedPeers.Add(active[i].Id);
         }
@@ -694,15 +886,24 @@ public sealed class MissionService
         {
             if (drone.Position is not null) reserved.Add(Block.Floor(drone.Position));
             if (drone.OutstandingDestination is { } destination) reserved.Add(destination);
+            if (drone.NextMove is { } next) reserved.Add(Block.From(next.Command.Destination));
+            if (mission.ContinuousFlight && drone.OutstandingSource is { } source) reserved.Add(source);
         }
 
+        for (var pass = 0; pass < (mission.ContinuousFlight ? 2 : 1); pass++)
         foreach (var drone in mission.Drones.Values.OrderBy(drone => drone.Id, StringComparer.Ordinal))
         {
-            drone.Stuck = false;
-            drone.WaitingForClearance = false;
-            if (drone.Position is null || drone.Faulted || drone.OutstandingCommand is not null)
+            if (pass == 0)
+            {
+                drone.Stuck = false;
+                drone.WaitingForClearance = false;
+            }
+            if (drone.Position is null || drone.Faulted ||
+                (pass == 1 && drone.OutstandingCommand is null) ||
+                (drone.OutstandingCommand is not null && (!mission.ContinuousFlight || drone.NextMove is not null)))
                 continue;
-            var start = Block.Floor(drone.Position);
+            var buffering = drone.OutstandingCommand is not null;
+            var start = buffering ? drone.OutstandingDestination!.Value : Block.Floor(drone.Position);
             if (mission.Phase == "recovering" && drone.Recovered && drone.RescueAssignment is null)
                 continue;
 
@@ -726,14 +927,17 @@ public sealed class MissionService
                     if (routeToPeer.Count >= 2)
                         IssueMove(drone, start, routeToPeer, false, true, false, mission, reserved);
                     else
-                        drone.WaitingForClearance = true;
+                        drone.WaitingForClearance = !buffering;
                     continue;
                 }
             }
 
-            if (drone.FrontierMovesSinceUpload >= FrontierMovesBeforeUpload)
+            if (drone.FrontierMovesSinceUpload + (buffering && drone.OutstandingExploration ? 1 : 0) >= FrontierMovesBeforeUpload)
                 drone.ReturningToUpload = true;
             var returning = drone.TargetKnown || drone.RecallKnown || drone.ReturningToUpload || drone.ReturnAfterRendezvous;
+            if (mission.ContinuousFlight && returning && IsInTowerNeighbourhood(mission, start) &&
+                CanCommunicate(mission.Tower, start, drone.KnownCells, mission.TowerCells))
+                continue;
             if (!returning && drone.RendezvousPeerId is not null && drone.RendezvousPosition is { } peerPosition)
             {
                 var routeToPeer = PlanPeerSearch(drone, start, peerPosition.Block, mission, false);
@@ -750,17 +954,21 @@ public sealed class MissionService
                     if (routeToPeer.Count >= 2)
                         IssueMove(drone, start, routeToPeer, false, false, true, mission, reserved);
                     else
-                        drone.WaitingForClearance = true;
+                        drone.WaitingForClearance = !buffering;
                     continue;
                 }
             }
 
+            // A queued departure must not skip the observation that makes this frontier useful.
+            if (mission.ContinuousFlight && !returning && drone.PendingFrontierObservation == start)
+                continue;
+
             var route = FindRoute(drone, start, returning ? mission.Tower : null, mission);
             if (!returning && route.Count < 2)
-                route = FindFrontierRoute(drone, start, mission);
+                route = FindFrontierRoute(drone, start, mission, skipStart: buffering);
             if (route.Count < 2)
             {
-                drone.Stuck = true;
+                drone.Stuck = !buffering;
                 continue;
             }
 
@@ -768,10 +976,10 @@ public sealed class MissionService
             {
                 route = returning
                     ? FindRoute(drone, start, mission.Tower, mission, reserved)
-                    : FindFrontierRoute(drone, start, mission, reserved);
+                    : FindFrontierRoute(drone, start, mission, reserved, skipStart: buffering);
                 if (route.Count < 2)
                 {
-                    drone.WaitingForClearance = true;
+                    drone.WaitingForClearance = !buffering;
                     continue;
                 }
             }
@@ -811,6 +1019,14 @@ public sealed class MissionService
     {
         var destination = route[1];
         reserved.Add(destination);
+        if (mission.ContinuousFlight && exploration)
+            drone.PendingFrontierObservation = destination;
+        if (drone.OutstandingCommand is { } current)
+        {
+            drone.NextMove = new(new(drone.Id, Guid.NewGuid().ToString(), "move", destination.ToPoint(), current.CommandId),
+                start, exploration, peerSearch, rendezvousSearch);
+            return;
+        }
         drone.OutstandingSource = start;
         drone.OutstandingDestination = destination;
         drone.OutstandingSinceTick = mission.LastGameTick;
@@ -858,50 +1074,19 @@ public sealed class MissionService
         Mission mission,
         IReadOnlySet<Block>? reserved = null)
     {
-        var queue = new Queue<Block>();
-        var previous = new Dictionary<Block, Block>();
-        var distance = new Dictionary<Block, int> { [start] = 0 };
-        queue.Enqueue(start);
-        var candidates = new List<Block>();
-        int? candidateDistance = null;
-
-        while (queue.TryDequeue(out var current))
+        var candidates = new HashSet<Block>();
+        for (var x = peer.X - 7; x <= peer.X + 7; x++)
+        for (var y = peer.Y - 7; y <= peer.Y + 7; y++)
+        for (var z = peer.Z - 7; z <= peer.Z + 7; z++)
         {
-            var currentDistance = distance[current];
-            if (candidateDistance is not null && currentDistance > candidateDistance.Value)
-                break;
-            if (IsWithinPeerSearchRegion(current, peer) && !searched.Contains(current))
-            {
-                candidateDistance = currentDistance;
-                candidates.Add(current);
-                continue;
-            }
-            foreach (var next in Neighbours(current))
-            {
-                if (!IsInBounds(next, mission.BoundsMin) ||
-                    (current == start && reserved?.Contains(next) == true) ||
-                    !drone.KnownCells.TryGetValue(next, out var cell) ||
-                    cell.Solid ||
-                    IsMoveBlocked(drone, current, next, mission.LastGameTick) ||
-                    distance.ContainsKey(next))
-                    continue;
-                distance[next] = currentDistance + 1;
-                previous[next] = current;
-                queue.Enqueue(next);
-            }
+            var block = new Block(x, y, z);
+            if (IsInBounds(block, mission.BoundsMin) && !searched.Contains(block) &&
+                drone.KnownCells.TryGetValue(block, out var cell) && !cell.Solid)
+                candidates.Add(block);
         }
-
         if (candidates.Count == 0) return [];
-        var chosen = candidates
-            .OrderBy(block => block.X)
-            .ThenBy(block => block.Y)
-            .ThenBy(block => block.Z)
-            .First();
-        var route = new List<Block> { chosen };
-        while (route[^1] != start)
-            route.Add(previous[route[^1]]);
-        route.Reverse();
-        return route;
+        return FindKnownRoute(drone, start, mission, candidates.Contains,
+            block => DistanceToRegion(block, peer, 7), reserved, chooseLexicalGoal: true);
     }
 
     private static bool IsWithinPeerSearchRegion(Block viewpoint, Block peer) =>
@@ -981,47 +1166,81 @@ public sealed class MissionService
     private static List<Block> FindRoute(Drone drone, Block start, Block? goal, Mission mission, IReadOnlySet<Block>? reserved = null)
     {
         if (goal is null || start == goal.Value) return [];
-        var localSolids = drone.KnownCells.Where(pair => pair.Value.Solid).Select(pair => pair.Key).ToHashSet();
+        var localSolids = drone.KnownSolids;
         var solidHive = goal.Value == mission.Tower && localSolids.Contains(mission.Tower);
-        var queue = new Queue<Block>();
+        return FindKnownRoute(drone, start, mission,
+            block => block == goal.Value || (solidHive && IsInTowerNeighbourhood(mission, block) &&
+                CanCommunicate(mission.Tower, block, localSolids)),
+            block => DistanceToRegion(block, goal.Value, solidHive ? 3 : 0), reserved);
+    }
+
+    private static int DistanceToRegion(Block block, Block centre, int radius) =>
+        Math.Max(0, Math.Abs(block.X - centre.X) - radius) +
+        Math.Max(0, Math.Abs(block.Y - centre.Y) - radius) +
+        Math.Max(0, Math.Abs(block.Z - centre.Z) - radius);
+
+    private static List<Block> FindKnownRoute(Drone drone, Block start, Mission mission,
+        Func<Block, bool> isGoal, Func<Block, int> estimateDistance, IReadOnlySet<Block>? reserved,
+        bool chooseLexicalGoal = false)
+    {
+        // Prefer deeper equal-cost nodes to avoid flooding open-air Manhattan plateaus.
+        var queue = new PriorityQueue<(Block Block, int Distance), (int Estimate, int NegativeDistance, long Order)>();
         var previous = new Dictionary<Block, Block>();
-        var visited = new HashSet<Block> { start };
-        queue.Enqueue(start);
-        while (queue.TryDequeue(out var current))
+        var distance = new Dictionary<Block, int> { [start] = 0 };
+        var candidates = new List<Block>();
+        int? bestDistance = null;
+        long order = 0;
+        queue.Enqueue((start, 0), (estimateDistance(start), 0, order++));
+        while (queue.TryDequeue(out var entry, out var priority))
         {
+            if (bestDistance is not null && priority.Estimate > bestDistance.Value) break;
+            var current = entry.Block;
+            if (distance[current] != entry.Distance) continue;
+            if (isGoal(current))
+            {
+                if (!chooseLexicalGoal) return BuildRoute(current, start, previous);
+                bestDistance = entry.Distance;
+                candidates.Add(current);
+                continue;
+            }
             foreach (var next in Neighbours(current))
             {
+                var nextDistance = entry.Distance + 1;
                 if (!IsInBounds(next, mission.BoundsMin) ||
                     (current == start && reserved?.Contains(next) == true) ||
                     !drone.KnownCells.TryGetValue(next, out var cell) ||
                     cell.Solid ||
                     IsMoveBlocked(drone, current, next, mission.LastGameTick) ||
-                    !visited.Add(next))
+                    (distance.TryGetValue(next, out var oldDistance) && oldDistance <= nextDistance))
                     continue;
                 previous[next] = current;
-                if (next == goal.Value || (solidHive && IsInTowerNeighbourhood(mission, next) &&
-                    CanCommunicate(mission.Tower, next, localSolids)))
-                {
-                    var path = new List<Block> { next };
-                    while (path[^1] != start)
-                        path.Add(previous[path[^1]]);
-                    path.Reverse();
-                    return path;
-                }
-                queue.Enqueue(next);
+                distance[next] = nextDistance;
+                queue.Enqueue((next, nextDistance),
+                    (nextDistance + estimateDistance(next), -nextDistance, order++));
             }
         }
-        return [];
+        if (candidates.Count == 0) return [];
+        var chosen = candidates.OrderBy(block => block.X).ThenBy(block => block.Y).ThenBy(block => block.Z).First();
+        return BuildRoute(chosen, start, previous);
     }
 
-    private static List<Block> FindFrontierRoute(Drone drone, Block start, Mission mission, IReadOnlySet<Block>? reserved = null)
+    private static List<Block> BuildRoute(Block destination, Block start, Dictionary<Block, Block> previous)
+    {
+        var route = new List<Block> { destination };
+        while (route[^1] != start) route.Add(previous[route[^1]]);
+        route.Reverse();
+        return route;
+    }
+
+    private static List<Block> FindFrontierRoute(Drone drone, Block start, Mission mission,
+        IReadOnlySet<Block>? reserved = null, bool skipStart = false)
     {
         var queue = new Queue<Block>();
         var previous = new Dictionary<Block, Block>();
         var distance = new Dictionary<Block, int> { [start] = 0 };
         queue.Enqueue(start);
         var candidates = new List<(Block Block, int Distance, int Gain)>();
-        var localSolids = drone.KnownCells.Where(pair => pair.Value.Solid).Select(pair => pair.Key).ToHashSet();
+        var localSolids = drone.KnownSolids;
         if (localSolids.Count == 0) return [];
         var startsNearSurface = IsNearSurface(start, localSolids);
         int? nearestCandidateDistance = null;
@@ -1036,7 +1255,7 @@ public sealed class MissionService
                 : 0;
             if (!startsNearSurface && nearSurface)
                 gain = Math.Max(1, gain);
-            if (gain > 0)
+            if (gain > 0 && (!skipStart || current != start))
             {
                 nearestCandidateDistance = distance[current];
                 candidates.Add((current, distance[current], gain));
@@ -1109,7 +1328,7 @@ public sealed class MissionService
         var from = Block.Floor(drone.Position);
         var target = mission.Target;
         if (!WithinCube(from, target)) return false;
-        var solids = drone.KnownCells.Where(pair => pair.Value.Solid).Select(pair => pair.Key).ToHashSet();
+        var solids = drone.KnownSolids;
         return !SegmentBlocked(from, target, solids);
     }
 
@@ -1117,16 +1336,34 @@ public sealed class MissionService
     {
         if (drone.Position is null) return;
         var from = Block.Floor(drone.Position);
-        var solids = drone.KnownCells.Where(pair => pair.Value.Solid).Select(pair => pair.Key).ToHashSet();
+        var solids = drone.KnownSolids;
         for (var x = from.X - 3; x <= from.X + 3; x++)
         for (var y = from.Y - 3; y <= from.Y + 3; y++)
         for (var z = from.Z - 3; z <= from.Z + 3; z++)
             if (!SegmentBlocked(from, new(x, y, z), solids))
-                drone.SearchedCells.Add(new(x, y, z));
+                if (drone.SearchedCells.Add(new(x, y, z)))
+                    drone.ChangedSearchedCells.Add(new(x, y, z));
     }
 
     private static bool CanCommunicate(Block from, Block to, HashSet<Block> solids) =>
         WithinCube(from, to) && !SegmentBlocked(from, to, solids);
+
+    private static bool CanCommunicate(Block from, Block to,
+        Dictionary<Block, KnownCell> first, Dictionary<Block, KnownCell> second)
+    {
+        if (!WithinCube(from, to)) return false;
+        var solids = new HashSet<Block>();
+        for (var x = Math.Min(from.X, to.X); x <= Math.Max(from.X, to.X); x++)
+        for (var y = Math.Min(from.Y, to.Y); y <= Math.Max(from.Y, to.Y); y++)
+        for (var z = Math.Min(from.Z, to.Z); z <= Math.Max(from.Z, to.Z); z++)
+        {
+            var block = new Block(x, y, z);
+            if ((first.TryGetValue(block, out var a) && a.Solid) ||
+                (second.TryGetValue(block, out var b) && b.Solid))
+                solids.Add(block);
+        }
+        return !SegmentBlocked(from, to, solids);
+    }
 
     private static bool WithinCube(Block from, Block to) =>
         Math.Abs(from.X - to.X) <= 3 &&
@@ -1191,17 +1428,20 @@ public sealed class MissionService
 
     private static Block ToBlock(CellObservation cell) => new(cell.X, cell.Y, cell.Z);
 
-    private static void MergeCell(Dictionary<Block, KnownCell> cells, Block coordinate, bool solid, long tick)
+    private static void MergeCell(Dictionary<Block, KnownCell> cells, Block coordinate, KnownCell cell,
+        HashSet<Block>? solids = null, HashSet<Block>? changed = null)
     {
-        if (!cells.TryGetValue(coordinate, out var old) || tick >= old.SourceTick)
-            cells[coordinate] = new(solid, tick);
-    }
-
-    private static void MergeCells(Dictionary<Block, KnownCell> destination, Dictionary<Block, KnownCell> source)
-    {
-        foreach (var pair in source)
-            if (!destination.TryGetValue(pair.Key, out var old) || pair.Value.SourceTick >= old.SourceTick)
-                destination[pair.Key] = pair.Value;
+        if (!cells.TryGetValue(coordinate, out var old) || cell.SourceTick > old.SourceTick ||
+            (cell.SourceTick == old.SourceTick && cell.Solid != old.Solid))
+        {
+            cells[coordinate] = cell;
+            changed?.Add(coordinate);
+            if (solids is not null && (old is null || old.Solid != cell.Solid))
+            {
+                if (cell.Solid) solids.Add(coordinate);
+                else solids.Remove(coordinate);
+            }
+        }
     }
 
     private static void MergePeerPosition(
@@ -1225,11 +1465,6 @@ public sealed class MissionService
         drone.ReturnAfterRendezvous = false;
     }
 
-    private static HashSet<Block> SolidCells(Dictionary<Block, KnownCell> first, Dictionary<Block, KnownCell> second) =>
-        first.Where(pair => pair.Value.Solid).Select(pair => pair.Key)
-            .Concat(second.Where(pair => pair.Value.Solid).Select(pair => pair.Key))
-            .ToHashSet();
-
     private static bool IsMoveBlocked(Drone drone, Block from, Block to, long currentTick) =>
         drone.BlockedMoves.TryGetValue((from, to), out var blockedTick) && currentTick - blockedTick < 100;
 
@@ -1243,6 +1478,8 @@ public sealed class MissionService
             Tower = Block.From(request.Tower);
             Target = Block.From(request.Target);
             InitialHash = initialHash;
+            ContinuousFlight = request.ContinuousFlight;
+            LastKnowledgeTick = request.InitialFrame.GameTick;
             Drones = request.InitialFrame.Drones.ToDictionary(
                 item => item.DroneId,
                 item => new Drone(item.DroneId),
@@ -1255,13 +1492,21 @@ public sealed class MissionService
         public Block Tower { get; }
         public Block Target { get; }
         public string InitialHash { get; }
+        public bool ContinuousFlight { get; }
         public Dictionary<string, Drone> Drones { get; }
         public Dictionary<Block, KnownCell> TowerCells { get; } = [];
+        public Dictionary<Block, KnownCell> ObservedCells { get; } = [];
+        public PublicCell[]? HiveTerrainCache { get; set; }
+        public PublicCell[]? ObservedTerrainCache { get; set; }
         public HashSet<Block> TowerSearchedCells { get; } = [];
+        public HashSet<Block> TowerChangedCells { get; } = [];
+        public HashSet<Block> TowerChangedSearchedCells { get; } = [];
+        public HashSet<int> TowerTerrainRecipients { get; } = [];
         public long Version { get; set; }
         public long LastSequence { get; set; }
         public long LastGameTick { get; set; }
         public long LastDecisionTick { get; set; }
+        public long LastKnowledgeTick { get; set; }
         public long LastFreshAt { get; set; }
         public string? LastFrameHash { get; set; }
         public AcceptedFrameResponse LastResponse { get; set; } = new(1, "", 0, 0, [], []);
@@ -1281,7 +1526,12 @@ public sealed class MissionService
         public long? LastSeenTick { get; set; }
         public long LastSeenAt { get; set; }
         public Dictionary<Block, KnownCell> KnownCells { get; set; } = [];
+        public HashSet<Block> KnownSolids { get; } = [];
         public HashSet<Block> SearchedCells { get; } = [];
+        public Block? PendingFrontierObservation { get; set; }
+        public HashSet<Block> ChangedCells { get; } = [];
+        public HashSet<Block> ChangedSearchedCells { get; } = [];
+        public HashSet<int> TerrainRecipients { get; } = [];
         public HashSet<string> ConnectedPeers { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, PeerPosition> PeerPositions { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, RecoveryAssignment> KnownRescueAssignments { get; } = new(StringComparer.Ordinal);
@@ -1289,6 +1539,7 @@ public sealed class MissionService
         public HashSet<Block> RendezvousVisited { get; } = [];
         public Dictionary<(Block From, Block To), long> BlockedMoves { get; } = [];
         public MovementCommand? OutstandingCommand { get; set; }
+        public QueuedMove? NextMove { get; set; }
         public Block? OutstandingDestination { get; set; }
         public Block? OutstandingSource { get; set; }
         public long? OutstandingSinceTick { get; set; }
@@ -1312,5 +1563,47 @@ public sealed class MissionService
         public PeerPosition? RendezvousPosition { get; set; }
         public long? RendezvousStartedTick { get; set; }
         public bool ReturnAfterRendezvous { get; set; }
+    }
+
+    private sealed record QueuedMove(MovementCommand Command, Block Source, bool Exploration, bool PeerSearch, bool RendezvousSearch);
+    private sealed record TerrainSource(Dictionary<Block, KnownCell> Cells, HashSet<Block> Searched,
+        HashSet<Block> ChangedCells, HashSet<Block> ChangedSearched, HashSet<int> Recipients, HashSet<Block>? Solids);
+    private sealed class CellRelay(int words)
+    {
+        public List<CellVersion> Versions { get; } = [];
+        public SourceOwners SearchedOwners = new(words);
+        public SourceOwners ChangedSearchedOwners = new(words);
+    }
+    private sealed class CellVersion(KnownCell cell, int words)
+    {
+        public KnownCell Cell { get; } = cell;
+        public SourceOwners Owners = new(words);
+        public SourceOwners ChangedOwners = new(words);
+    }
+    private struct SourceOwners(int words)
+    {
+        private ulong _low = 0;
+        private readonly ulong[] _high = words > 1 ? new ulong[words - 1] : [];
+
+        public void Add(int index)
+        {
+            if (index < 64) _low |= 1UL << index;
+            else _high[index / 64 - 1] |= 1UL << (index % 64);
+        }
+
+        public readonly bool Contains(int index) => index < 64
+            ? (_low & (1UL << index)) != 0
+            : (_high[index / 64 - 1] & (1UL << (index % 64))) != 0;
+
+        public readonly int HighestAllowed(ulong[] allowed)
+        {
+            for (var word = _high.Length - 1; word >= 0; word--)
+            {
+                var common = _high[word] & allowed[word + 1];
+                if (common != 0) return (word + 1) * 64 + BitOperations.Log2(common);
+            }
+            var low = _low & allowed[0];
+            return low == 0 ? -1 : BitOperations.Log2(low);
+        }
     }
 }

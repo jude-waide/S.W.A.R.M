@@ -48,6 +48,7 @@ const snapshot: Snapshot = {
   protocolVersion: 1, missionId: "mission-a", version: 1, phase: "searching",
   connectionState: "connected", worldId: "test", tower: { x: 0, y: 20, z: 0 },
   targetReported: true, reportedTarget: { x: 99, y: 20, z: 99 },
+  targetFound: true,
   overallTarget: { x: 99, y: 20, z: 99 },
   terrain: [{ x: 90, y: 19, z: 90, sourceTick: 20 }],
   liveTerrain: [{ x: 91, y: 19, z: 91, sourceTick: 20 }],
@@ -65,6 +66,7 @@ const debug: DroneDebug = {
   ],
   knownTarget: null,
   frontierMovesSinceUpload: 0,
+  peerPositions: [],
 };
 
 test("overall view shows the true target before discovery without revealing it in hive or scout views", () => {
@@ -86,6 +88,12 @@ test("scout view shows only the selected unit's solid knowledge, own position an
   assert.deepEqual(data.drones[0].connectedPeers, []);
   const target = { x: 31, y: 21, z: -12 };
   assert.deepEqual(getMapData(snapshot, "scout", scout.id, { ...debug, knownTarget: target }).reportedTarget, target);
+  const livePosition = { x: 31, y: 21, z: -12 };
+  const moving = { ...snapshot, gameTick: 22, drones: [{ ...scout, livePosition }] };
+  const updated = getMapData(moving, "scout", scout.id, debug);
+  assert.deepEqual(updated.drones[0].position, livePosition);
+  assert.deepEqual(updated.terrain, [debug.cells[0]]);
+  assert.deepEqual(updated.reportedTarget, null);
 });
 
 test("scout view never falls back to global knowledge while loading or switching unit/mission", () => {
@@ -102,4 +110,20 @@ test("scout view never falls back to global knowledge while loading or switching
 test("hive and overall terrain remain distinct when scout debug data is present", () => {
   assert.deepEqual(getMapData(snapshot, "hive", scout.id, debug).terrain, snapshot.terrain);
   assert.deepEqual(getMapData(snapshot, "overall", scout.id, debug).terrain, snapshot.liveTerrain);
+});
+
+test("scout peer markers use only its independently retained sightings, never hive or live positions", () => {
+  const sighting = { droneId: "SCOUT-02", position: { x: 4, y: 20, z: 8 }, sourceTick: 10 };
+  const data = getMapData(snapshot, "scout", scout.id, { ...debug, peerPositions: [sighting] });
+  assert.equal(data.drones.length, 2);
+  const peer = data.drones[1];
+  assert.deepEqual(peer.position, sighting.position);
+  assert.equal(peer.positionCurrent, false);
+  assert.equal(peer.lastSeenTick, 10);
+  assert.equal(peer.livePosition, null);
+  assert.equal(snapshot.drones[1].position, scout.position);
+  const stale = getMapData({ ...snapshot, gameTick: 60 }, "scout", scout.id, {
+    ...debug, peerPositions: [{ ...sighting, sourceTick: 20 }],
+  });
+  assert.equal(stale.drones[1].positionCurrent, false);
 });

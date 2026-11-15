@@ -9,6 +9,8 @@ import org.bukkit.util.BoundingBox;
 import org.bukkit.util.Vector;
 
 import java.util.HashSet;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Set;
 import java.util.UUID;
 
@@ -35,7 +37,10 @@ public class DroneAI {
     private BukkitTask flightTask;
     private UUID commandId;
     private Location target;
-    private Result pendingResult;
+    private final Deque<Result> pendingResults = new ArrayDeque<>();
+    private Move nextMove;
+    private UUID lastCompletedCommand;
+    private record Move(UUID id, int x, int y, int z) {}
     private double bestDistSq;
     private int ticksSinceProgress;
 
@@ -84,15 +89,29 @@ public class DroneAI {
     }
 
     public void issueMove(UUID id, int x, int y, int z) {
+        issueMove(id, x, y, z, null);
+    }
+
+    public void issueMove(UUID id, int x, int y, int z, UUID afterCommandId) {
         if (id.equals(commandId) || seenCommands.contains(id)) return;
-        if (commandId != null || pendingResult != null) {
+        if (commandId != null && commandId.equals(afterCommandId) && nextMove == null) {
+            seenCommands.add(id);
+            nextMove = new Move(id, x, y, z);
+            return;
+        }
+        if (commandId != null || (afterCommandId == null && !pendingResults.isEmpty()) ||
+                (afterCommandId != null && !afterCommandId.equals(lastCompletedCommand))) {
             plugin.getLogger().warning("Rejected overlapping movement command for drone " + mob.getUniqueId());
             return;
         }
         seenCommands.add(id);
-        commandId = id;
+        beginMove(new Move(id, x, y, z));
+    }
+
+    private void beginMove(Move move) {
+        commandId = move.id();
         // Entity locations are feet positions. Centre the whole bee inside its cell.
-        target = new Location(mob.getWorld(), x + 0.5, y + (1 - mob.getHeight()) / 2, z + 0.5);
+        target = new Location(mob.getWorld(), move.x() + 0.5, move.y() + (1 - mob.getHeight()) / 2, move.z() + 0.5);
         Block destination = target.getBlock();
         if (!destination.isPassable() || destination.isLiquid()) {
             finish(Status.BLOCKED, "Destination is obstructed");
@@ -102,11 +121,11 @@ public class DroneAI {
         ticksSinceProgress = 0;
     }
 
-    public Result getPendingResult() { return pendingResult; }
+    public Result getPendingResult() { return pendingResults.peekFirst(); }
 
     public void acknowledge(UUID id) {
-        if (pendingResult != null && pendingResult.commandId().equals(id)) {
-            pendingResult = null;
+        if (getPendingResult() != null && getPendingResult().commandId().equals(id)) {
+            pendingResults.removeFirst();
         }
     }
 
@@ -116,7 +135,9 @@ public class DroneAI {
         mob.setVelocity(new Vector());
         commandId = null;
         target = null;
-        pendingResult = null;
+        pendingResults.clear();
+        nextMove = null;
+        lastCompletedCommand = null;
         seenCommands.clear();
         ticksSinceProgress = 0;
         bestDistSq = 0;
@@ -135,12 +156,13 @@ public class DroneAI {
 
         Location here = mob.getLocation();
         double distSq = here.distanceSquared(target);
-        if (distSq <= ARRIVE_DISTANCE_SQ
+        while (distSq <= ARRIVE_DISTANCE_SQ
                 && here.getBlockX() == target.getBlockX()
                 && here.getBlockY() == target.getBlockY()
                 && here.getBlockZ() == target.getBlockZ()) {
             finish(Status.COMPLETED, null);
-            return;
+            if (commandId == null) return;
+            distSq = here.distanceSquared(target);
         }
         if (distSq < bestDistSq - PROGRESS_EPSILON_SQ) {
             bestDistSq = distSq;
@@ -173,9 +195,16 @@ public class DroneAI {
     }
 
     private void finish(Status status, String reason) {
-        pendingResult = new Result(commandId, status, reason);
+        pendingResults.addLast(new Result(commandId, status, reason));
+        lastCompletedCommand = status == Status.COMPLETED ? commandId : null;
         commandId = null;
         target = null;
+        Move next = nextMove;
+        nextMove = null;
+        if (status == Status.COMPLETED && next != null) {
+            beginMove(next);
+            return;
+        }
         mob.setVelocity(new Vector());
     }
 }

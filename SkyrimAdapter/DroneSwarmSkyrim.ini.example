@@ -1,0 +1,8 @@
+[Server]
+BaseUrl=http://127.0.0.1:5000
+PluginKey=replace-with-the-backend-plugin-key
+
+[Mission]
+TargetX=40
+TargetY=0
+TargetZ=40

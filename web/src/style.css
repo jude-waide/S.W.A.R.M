@@ -27,9 +27,28 @@ button { color: inherit; }
 .brand { display: inline-flex; align-items: center; gap: 11px; color: inherit; text-decoration: none; }
 .brand-mark { width: 34px; height: 38px; color: var(--amber); flex-shrink: 0; }
 .brand-name { font: 600 13px var(--display); letter-spacing: 1.6px; }
+.game-switch { display: flex; gap: 4px; padding: 3px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); }
+.game-switch button { padding: 6px 9px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: var(--muted); font: 9px var(--mono); cursor: pointer; }
+.game-switch button[aria-pressed="true"], .game-switch button:hover { color: var(--honey); border-color: var(--amber); background: #4c3213; }
 .eyebrow, .metric > span, .map-connection, .drone-info small, .state-tag, .detail-empty small, .readout span, .knowledge-box > div:first-child, .knowledge-box > small, .inspector-foot, .target-report small { font: 10px var(--mono); letter-spacing: .8px; }
 .eyebrow { color: var(--muted); }
 .topbar-status { display: flex; align-items: center; }
+.mission-milestones { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 0 12px; font: 9px var(--mono); color: var(--muted); }
+.mission-milestones span { padding: 6px 8px; border: 1px solid var(--line); border-radius: 4px; }
+.mission-milestones .achieved { color: var(--honey); border-color: var(--amber); }
+.mission-milestones .home { color: #b7eead; border-color: #69a65f; background: #193019; }
+.cutaway-toggle { position: absolute; z-index: 3; right: 16px; bottom: 64px; padding: 9px 12px; font: 10px var(--mono); color: var(--muted); cursor: pointer; border-radius: 5px; }
+.cutaway-toggle[aria-pressed="true"] { color: var(--honey); border-color: var(--amber); }
+.replay-control { position: absolute; z-index: 3; bottom: 20px; left: 48px; right: 195px; width: fit-content; max-width: calc(100% - 243px); display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 8px 10px; border-radius: 6px; font: 10px var(--mono); }
+.replay-control button, .replay-control select { background: var(--bg); color: var(--honey); border: 1px solid var(--line); border-radius: 4px; padding: 5px 7px; cursor: pointer; font: inherit; }
+.replay-control input { min-width: 90px; width: min(230px, 22vw); accent-color: var(--amber); }
+.replay-control [role="alert"] { color: #e28d7e; flex-basis: 100%; }
+button:disabled { opacity: .4; cursor: not-allowed; }
+@media (max-width: 650px) {
+  .mission-milestones { font-size: 7px; gap: 3px; }
+  .mission-milestones span { padding: 3px; }
+  .replay-control { left: 10px; bottom: 104px; right: 10px; max-width: calc(100% - 20px); }
+}
 .status-pip { width: 9px; height: 9px; border-radius: 50%; background: #4a4033; }
 .status-pip.is-live { background: var(--amber); box-shadow: 0 0 8px #ff9a2488; }
 

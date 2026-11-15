@@ -16,6 +16,7 @@ public sealed class InitializeMissionRequest
     public BlockPoint Tower { get; set; } = new();
     public BlockPoint Target { get; set; } = new();
     public ObservationFrame InitialFrame { get; set; } = new();
+    public bool ContinuousFlight { get; set; }
 }
 
 public sealed class ObservationFrame
@@ -79,7 +80,10 @@ public sealed record AcceptedFrameResponse(
     IReadOnlyList<MovementCommand> Commands);
 
 public sealed record AcknowledgedResult(string DroneId, string CommandId);
-public sealed record MovementCommand(string DroneId, string CommandId, string Kind, BlockPoint Destination);
+public sealed record MovementCommand(string DroneId, string CommandId, string Kind, BlockPoint Destination,
+    string? AfterCommandId = null);
+public sealed record MotionSnapshot(string MissionId, long Version, long GameTick, IReadOnlyList<LiveDrone> Drones);
+public sealed record LiveDrone(string Id, DronePosition? Position, bool PositionCurrent, bool Faulted);
 public sealed record PluginStatus(int ProtocolVersion, string? ActiveMissionId, string Phase);
 
 public sealed record PublicSnapshot(
@@ -98,7 +102,10 @@ public sealed record PublicSnapshot(
     IReadOnlyList<string> MissingDroneIds,
     long? GameTick,
     IReadOnlyList<PublicCell> LiveTerrain,
-    BlockPoint? OverallTarget);
+    BlockPoint? OverallTarget,
+    bool TargetFound);
+
+public sealed record ReplayIndex(string? MissionId, IReadOnlyList<long> GameTicks);
 
 public sealed record PublicCell(int X, int Y, int Z, long SourceTick);
 public sealed record PublicDrone(
@@ -130,9 +137,11 @@ public sealed record DroneDebug(
     IReadOnlyList<string> ConnectedPeers,
     IReadOnlyList<DebugCell> Cells,
     BlockPoint? KnownTarget,
-    int FrontierMovesSinceUpload);
+    int FrontierMovesSinceUpload,
+    IReadOnlyList<PeerSighting> PeerPositions);
 
 public sealed record DebugCell(int X, int Y, int Z, bool Solid, long SourceTick);
+public sealed record PeerSighting(string DroneId, DronePosition Position, long SourceTick);
 
 public sealed class ProtocolException(int statusCode, string code, string message) : Exception(message)
 {

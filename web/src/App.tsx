@@ -1,7 +1,8 @@
 import { HubConnectionBuilder, HubConnectionState, LogLevel } from "@microsoft/signalr";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DroneDebug, MapViewMode, PublicDrone, Snapshot } from "./types";
+import type { DroneDebug, MapViewMode, MotionSnapshot, PublicDrone, ReplayIndex, Snapshot } from "./types";
 import { getMapData } from "./mapDrones";
+import { mergeMotion } from "./motion";
 
 const MapScene = lazy(() => import("./MapScene"));
 
@@ -14,6 +15,7 @@ const emptySnapshot: Snapshot = {
   worldId: null,
   tower: null,
   targetReported: false,
+  targetFound: false,
   reportedTarget: null,
   overallTarget: null,
   terrain: [],
@@ -25,9 +27,22 @@ const emptySnapshot: Snapshot = {
 };
 
 const api = import.meta.env.VITE_API_BASE ?? "";
+const games = ["minecraft", "skyrim"] as const;
+type GameId = (typeof games)[number];
 
 export default function App() {
-  const [snapshot, setSnapshot] = useState(emptySnapshot);
+  const [game, setGame] = useState<GameId>("minecraft");
+  const [liveSnapshot, setSnapshot] = useState(emptySnapshot);
+  const [replayIndex, setReplayIndex] = useState<ReplayIndex>({ missionId: null, gameTicks: [] });
+  const [replaying, setReplaying] = useState(false);
+  const [replayFrame, setReplayFrame] = useState(0);
+  const [recordedFrame, setRecordedFrame] = useState<{ index: number; snapshot: Snapshot } | null>(null);
+  const [replayError, setReplayError] = useState<string | null>(null);
+  const [replayIndexError, setReplayIndexError] = useState<string | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1);
+  const [cutaway, setCutaway] = useState(false);
+  const snapshot = replaying ? recordedFrame?.snapshot ?? emptySnapshot : liveSnapshot;
   const [apiOnline, setApiOnline] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [debug, setDebug] = useState<DroneDebug | null>(null);
@@ -37,32 +52,116 @@ export default function App() {
   const [viewMode, setViewMode] = useState<MapViewMode>("hive");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [focusRequest, setFocusRequest] = useState(0);
-  const snapshotRef = useRef(snapshot);
+  const snapshotRef = useRef(liveSnapshot);
+  const gameRef = useRef(game);
+  gameRef.current = game;
   const connectionRef = useRef<import("@microsoft/signalr").HubConnection | null>(null);
   const selectedIdRef = useRef(selectedId);
   const debugRealtimeRef = useRef(false);
+  const replayTick = replayIndex.gameTicks[replayFrame];
+  const nextReplayTick = replayIndex.gameTicks[replayFrame + 1];
 
   useEffect(() => {
-    snapshotRef.current = snapshot;
+    snapshotRef.current = liveSnapshot;
     selectedIdRef.current = selectedId;
-  }, [snapshot, selectedId]);
+  }, [liveSnapshot, selectedId]);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      try {
+        const response = await fetch(`${api}/api/public/${game}/replay`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`Replay index request failed (${response.status})`);
+        const next = await response.json() as ReplayIndex;
+        if (active) {
+          setReplayIndex(next);
+          setReplayIndexError(null);
+        }
+      } catch (error) {
+        if (active) setReplayIndexError(error instanceof Error ? error.message : "Replay index unavailable");
+      }
+    };
+    void load();
+    const timer = window.setInterval(() => void load(), 2500);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [game]);
+
+  useEffect(() => {
+    snapshotRef.current = emptySnapshot;
+    setSnapshot(emptySnapshot);
+    setReplayIndex({ missionId: null, gameTicks: [] });
+    setReplaying(false);
+    setPlaying(false);
+    setRecordedFrame(null);
+    setSelectedId(null);
+    setDebug(null);
+    setInspectionOpen(false);
+    setViewMode("hive");
+    setApiOnline(false);
+  }, [game]);
+
+  useEffect(() => {
+    setReplaying(false);
+    setPlaying(false);
+    setRecordedFrame(null);
+    setReplayError(null);
+  }, [game, replayIndex.missionId]);
+
+  useEffect(() => {
+    if (!replaying || !replayIndex.missionId) return;
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const response = await fetch(
+          `${api}/api/public/${game}/replay/${encodeURIComponent(replayIndex.missionId!)}/frames/${replayFrame}`,
+          { cache: "no-store", signal: controller.signal },
+        );
+        if (!response.ok) throw new Error(`Replay frame request failed (${response.status})`);
+        const next = await response.json() as Snapshot;
+        if (!controller.signal.aborted) {
+          setRecordedFrame({ index: replayFrame, snapshot: next });
+          setReplayError(null);
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) {
+          setPlaying(false);
+          setReplayError(error instanceof Error ? error.message : "Replay frame unavailable");
+        }
+      }
+    };
+    void load();
+    return () => controller.abort();
+  }, [game, replaying, replayIndex.missionId, replayFrame]);
+
+  useEffect(() => {
+    if (!replaying || !playing || recordedFrame?.index !== replayFrame) return;
+    if (nextReplayTick === undefined) {
+      setPlaying(false);
+      return;
+    }
+    const delay = Math.max(20,
+      (nextReplayTick - replayTick) * 50 / playbackSpeed);
+    const timer = window.setTimeout(() => setReplayFrame((frame) => frame + 1), delay);
+    return () => window.clearTimeout(timer);
+  }, [replaying, playing, recordedFrame, replayFrame, replayTick, nextReplayTick, playbackSpeed]);
 
   useEffect(() => {
     setSelectedId(null);
     setDebug(null);
     setInspectionOpen(false);
     setViewMode("hive");
-  }, [snapshot.missionId]);
+  }, [game, snapshot.missionId]);
 
   useEffect(() => {
     if (snapshot.tower) setHeightLimit(snapshot.tower.y + 32);
-  }, [snapshot.missionId, snapshot.tower?.y]);
+  }, [game, snapshot.missionId, snapshot.tower?.y]);
 
   const refresh = useCallback(async () => {
     try {
-      const response = await fetch(`${api}/api/public/snapshot`, { cache: "no-store" });
+      const response = await fetch(`${api}/api/public/${game}/snapshot`, { cache: "no-store" });
       if (!response.ok) throw new Error(`Snapshot request failed (${response.status})`);
       const next = (await response.json()) as Snapshot;
+      if (gameRef.current !== game) return;
       const current = snapshotRef.current;
       if (current.missionId === next.missionId && next.version < current.version) return;
       snapshotRef.current = next;
@@ -71,7 +170,7 @@ export default function App() {
     } catch {
       setApiOnline(false);
     }
-  }, []);
+  }, [game]);
 
   useEffect(() => {
     void refresh();
@@ -81,7 +180,7 @@ export default function App() {
 
   useEffect(() => {
     const connection = new HubConnectionBuilder()
-      .withUrl(`${api}/hubs/mission`)
+      .withUrl(`${api}/hubs/mission/${game}`)
       .withAutomaticReconnect()
       .configureLogging(LogLevel.Error)
       .build();
@@ -89,6 +188,7 @@ export default function App() {
     let retryTimer = 0;
     connectionRef.current = connection;
     connection.on("missionUpdated", (next: Snapshot) => {
+      if (gameRef.current !== game) return;
       const current = snapshotRef.current;
       if (current.missionId === next.missionId && next.version <= current.version) return;
       if (current.missionId === next.missionId && next.version > current.version + 1)
@@ -97,7 +197,21 @@ export default function App() {
       setSnapshot(next);
       setApiOnline(true);
     });
+    connection.on("motionUpdated", (motion: MotionSnapshot) => {
+      if (gameRef.current !== game) return;
+      const current = snapshotRef.current;
+      const next = mergeMotion(current, motion);
+      if (!next) {
+        void connection.invoke("RequestSnapshot").catch(() => void refresh());
+        return;
+      }
+      if (next === current) return;
+      snapshotRef.current = next;
+      setSnapshot(next);
+      setApiOnline(true);
+    });
     connection.on("droneDebugUpdated", (next: DroneDebug) => {
+      if (gameRef.current !== game) return;
       if (selectedIdRef.current !== next.droneId || snapshotRef.current.missionId !== next.missionId) return;
       debugRealtimeRef.current = true;
       setDebug((current) =>
@@ -145,10 +259,10 @@ export default function App() {
       connectionRef.current = null;
       void connection.stop();
     };
-  }, [refresh]);
+  }, [game, refresh]);
 
   useEffect(() => {
-    if (!selectedId) {
+    if (!selectedId || replaying) {
       setDebug(null);
       setDebugError(null);
       debugRealtimeRef.current = false;
@@ -160,7 +274,7 @@ export default function App() {
     setDebugError(null);
     const loadInitial = async () => {
       try {
-        const response = await fetch(`${api}/api/public/drones/${encodeURIComponent(selectedId)}`, {
+        const response = await fetch(`${api}/api/public/${game}/drones/${encodeURIComponent(selectedId)}`, {
           cache: "no-store",
         });
         if (!response.ok) throw new Error(`Drone debug request failed (${response.status})`);
@@ -198,7 +312,7 @@ export default function App() {
           .catch((error: unknown) => console.error("Drone debug unsubscription failed", error));
       window.clearInterval(timer);
     };
-  }, [selectedId]);
+  }, [game, selectedId, replaying]);
 
   useEffect(() => {
     if (selectedId && !snapshot.drones.some((drone) => drone.id === selectedId)) {
@@ -209,8 +323,8 @@ export default function App() {
   }, [selectedId, snapshot.drones]);
 
   const mapData = useMemo(
-    () => getMapData(snapshot, viewMode, selectedId, debug),
-    [snapshot, viewMode, selectedId, debug],
+    () => getMapData(snapshot, viewMode, selectedId, replaying ? null : debug),
+    [snapshot, viewMode, selectedId, debug, replaying],
   );
   const scoutReady = debug?.missionId === snapshot.missionId && debug?.droneId === selectedId;
   const counts = useMemo(() => ({
@@ -242,6 +356,23 @@ export default function App() {
           </svg>
           <span className="brand-name">SWARM</span>
         </a>
+        <nav className="game-switch" aria-label="Game session">
+          {games.map((gameId) => (
+            <button key={gameId} type="button" aria-pressed={game === gameId}
+              onClick={() => setGame(gameId)}>
+              {gameId.toUpperCase()}
+            </button>
+          ))}
+        </nav>
+        {snapshot.missionId && <div className="mission-milestones" role="status" aria-label="Mission milestones">
+          <span className={snapshot.targetFound ? "achieved" : ""}>{snapshot.targetFound ? "TARGET FOUND" : "SEARCHING"}</span>
+          {snapshot.targetFound && <span className={snapshot.targetReported ? "achieved" : ""}>
+            {snapshot.targetReported ? "HIVE INFORMED" : "AWAITING HIVE REPORT"}
+          </span>}
+          {snapshot.targetReported && <span className={snapshot.phase === "complete" ? "achieved home" : ""}>
+            {snapshot.phase === "complete" ? "ALL DRONES HOME / AT REST" : `RETURNING ${counts.recovered}/${counts.total}`}
+          </span>}
+        </div>}
         <div className="topbar-status" role="status" aria-label={apiOnline ? "Backend online" : "Backend offline"} title={apiOnline ? "Backend online" : "Backend offline"}>
           <span className={`status-pip ${apiOnline ? "is-live" : ""}`} />
         </div>
@@ -264,7 +395,7 @@ export default function App() {
               }}>
                 HIVE VIEW
               </button>
-              <button className="map-overview" type="button" aria-pressed={viewMode === "scout"} onClick={() => {
+              <button className="map-overview" type="button" disabled={replaying} title={replaying ? "Individual scout inspection is live-only" : undefined} aria-pressed={viewMode === "scout"} onClick={() => {
                 setViewMode("scout");
                 if (!selectedId && snapshot.drones[0]) selectDrone(snapshot.drones[0].id);
               }}>
@@ -279,8 +410,8 @@ export default function App() {
             </div>
             <div className="drawer-status">
               <h1>{phaseTitle(snapshot.phase)}</h1>
-              <span className={`map-connection ${snapshot.connectionState === "connected" ? "connected" : ""}`} role="status" aria-label={`Minecraft ${snapshot.connectionState === "connected" ? "connected" : "disconnected"}`} title={`Minecraft ${snapshot.connectionState === "connected" ? "connected" : "disconnected"}`}>
-                <i /> MINECRAFT
+              <span className={`map-connection ${snapshot.connectionState === "connected" ? "connected" : ""}`} role="status" aria-label={`${game} ${snapshot.connectionState === "connected" ? "connected" : "disconnected"}`} title={`${game} ${snapshot.connectionState === "connected" ? "connected" : "disconnected"}`}>
+                <i /> {game.toUpperCase()}
               </span>
             </div>
           </div>
@@ -322,7 +453,7 @@ export default function App() {
           <div className="map-viewport">
             {snapshot.tower ? (
               <Suspense fallback={<div className="map-loading">LOADING SPATIAL VIEW…</div>}>
-                <MapScene key={snapshot.missionId} snapshot={snapshot} mapData={mapData} heightLimit={heightLimit} selectedId={selectedId} focusRequest={focusRequest} viewMode={viewMode} onSelect={selectDrone} />
+                <MapScene key={`${game}:${snapshot.missionId}`} snapshot={snapshot} mapData={mapData} heightLimit={heightLimit} selectedId={selectedId} focusRequest={focusRequest} viewMode={viewMode} cutaway={cutaway} interpolate={!replaying} onSelect={selectDrone} />
               </Suspense>
             ) : (
               <div className="map-empty">
@@ -339,6 +470,38 @@ export default function App() {
               </div>
             )}
           </div>
+          <button type="button" className="cutaway-toggle panel" aria-pressed={cutaway} onClick={() => setCutaway((value) => !value)}
+            title="Hide the camera-facing half of known terrain, centered on the selected scout or hive">
+            CUTAWAY {cutaway ? "ON" : "OFF"}
+          </button>
+          <section className="replay-control panel" aria-label="Mission replay">
+            <button type="button" disabled={!replayIndex.missionId} aria-pressed={replaying} onClick={() => {
+              setReplaying((value) => !value);
+              setPlaying(false);
+              setReplayFrame(0);
+              setRecordedFrame(null);
+              setSelectedId(null);
+              setInspectionOpen(false);
+              setViewMode("hive");
+            }}>{replaying ? "BACK TO LIVE" : "REPLAY SEARCH"}</button>
+            {replaying && <>
+              <button type="button" aria-label={playing ? "Pause replay" : "Play replay"} onClick={() => {
+                if (replayFrame >= replayIndex.gameTicks.length - 1) setReplayFrame(0);
+                setPlaying((value) => !value);
+              }}>{playing ? "PAUSE" : "PLAY"}</button>
+              <input aria-label="Replay timeline" type="range" min={0} max={Math.max(0, replayIndex.gameTicks.length - 1)}
+                value={replayFrame} onChange={(event) => {
+                  setPlaying(false);
+                  setReplayFrame(Number(event.target.value));
+                }} />
+              <select aria-label="Replay speed" value={playbackSpeed} onChange={(event) => setPlaybackSpeed(Number(event.target.value))}>
+                {[1, 2, 4, 8, 16].map((speed) => <option key={speed} value={speed}>{speed}x</option>)}
+              </select>
+              <span>{((replayTick - replayIndex.gameTicks[0]) / 20).toFixed(1)}s</span>
+              {recordedFrame?.index !== replayFrame && !replayError && <span role="status">LOADING</span>}
+            </>}
+            {(replayError || replayIndexError) && <span role="alert">{replayError ?? replayIndexError}</span>}
+          </section>
           <details className="height-control">
             <summary>
               HEIGHT FILTER <strong>{heightLimit}</strong>
@@ -378,7 +541,10 @@ export default function App() {
             </button>
           </header>
           <div className="overlay-content">
-          {debug?.droneId === selectedDrone.id && debug.missionId === snapshot.missionId ? (
+          {replaying ? <div className="detail-empty"><strong>RECORDED POSITION</strong>
+            <p>{formatPosition(selectedDrone.position)}<br />{formatState(selectedDrone.behavior)}</p>
+            <p>Individual scout inspection is live-only. Replay preserves hive and overall knowledge.</p>
+          </div> : debug?.droneId === selectedDrone.id && debug.missionId === snapshot.missionId ? (
             <DroneInspector drone={selectedDrone} debug={debug} />
           ) : (
             <div className="detail-empty" role="status">
