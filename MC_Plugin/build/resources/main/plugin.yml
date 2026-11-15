@@ -1,0 +1,4 @@
+name: DroneSim
+version: 1.0
+main: me.jetcobblestone.Main
+api-version: '1.21'

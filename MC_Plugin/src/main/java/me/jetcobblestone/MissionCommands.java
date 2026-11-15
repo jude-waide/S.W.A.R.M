@@ -216,7 +216,7 @@ public class MissionCommands {
             return true;
         }
         if (!plugin.getDroneManager().allDronesInBounds(boundsAt(hive), hive.getWorld())) {
-            sender.sendMessage("Every drone must be available in the hive's world and inside the mission bounds.");
+            plugin.getSLF4JLogger().warn(hive + ", " + hive.getWorld());
             return true;
         }
 

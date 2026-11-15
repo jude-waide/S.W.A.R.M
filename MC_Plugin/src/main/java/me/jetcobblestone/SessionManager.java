@@ -150,7 +150,7 @@ public class SessionManager {
                                     + error.getClass().getSimpleName() + "). Retry /reset_mission.");
                         } else if (response.statusCode() == 204) {
                             resetFailed = false;
-                            droneManager.resetAll();
+                            droneManager.removeAll();
                             plugin.setSessionManager(null);
                             plugin.getLogger().info("Mission " + missionId + " reset.");
                             onReset.run();
